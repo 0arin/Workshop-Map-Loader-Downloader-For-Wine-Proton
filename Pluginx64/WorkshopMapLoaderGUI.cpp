@@ -15,24 +15,19 @@ int RLMAPS_SearchWorkshopDisplayed = 0;
 float heightMutators = 35.f;
 float heightHostGamePopup = 194.f;
 
-float windowSizeXBefore = ImGui::GetWindowSize().x;
-float windowSizeYBefore = ImGui::GetWindowSize().y;
+// PERF: Removed dead global ImGui calls that ran at DLL load time before any
+// ImGui context existed. windowSizeXBefore/Y were never used.
 
 
 void Pluginx64::Render()
 {
-	// FIX: Controller open/close check moved here from RegisterDrawable in onLoad().
-	// RegisterDrawable ran this every frame on the game render thread, which is
-	// extremely expensive under Wine/Proton. PluginWindow::Render() is the correct
-	// place for per-frame logic — it only runs when the plugin is active.
-	checkOpenMenuWithController(CanvasWrapper(0));
+	// PERF: Guard controller check so XInputGetState (expensive under Wine) is
+	// only called when the feature is actually enabled.
+	if (UseController)
+		checkOpenMenuWithController(CanvasWrapper(0));
 
-	HANDLE clip; //ClipBoard to copy and paste
-	if (OpenClipboard(NULL))
-	{
-		clip = GetClipboardData(CF_TEXT);
-		CloseClipboard();
-	}
+	// PERF: Removed dead clipboard block. OpenClipboard/GetClipboardData crossed
+	// the Win32<->X11 boundary every frame under Wine, and the result was never used.
 
 
 
@@ -122,203 +117,8 @@ void Pluginx64::Render()
 	}
 
 
-	if (!FR)
-	{
-		//Menubar
-		SettingsText = "Settings";
-		MultiplayerText = "Multiplayer";
-		LastUpdateText = "Last Update";
-		JoinCWGText = "Join Community Workshop Games discord server :";
-		OpenCPCCText = "Open CookedPCConsole Directory";
-		NoMapsCanBeJoinText = "No maps can be joined";
-		MapsJoinableText = "Maps joinable";
-		DlTexturesText = "Download Textures";
-		LanguageText = "Language";
-		ExtractMethodText = "Extract Method";
-		WarningText = "Warning :";
-
-		//Controller settings
-		ControllerText = "Controller";
-		UseControllerText = "Use Controller";
-		ControllsText = "Controlls";
-		ScrollSensitivityText = "Scroll Sensitivity";
-		SensitivityText = "Sensitivity";
-		ControllsLitText[0] = "Left Thumb + Right Thumb : open/close the menu";
-		ControllsLitText[1] = "DPAD arrows : navigate through the maps";
-		ControllsLitText[2] = "Left joystick : move the cursor";
-		ControllsLitText[3] = "Right joystick : scroll";
-		ControllsLitText[4] = "LB/L1 : click";
-		ControllsLitText[5] = "B/O : close the menu";
-
-		//1st Tab
-		Tab1MapLoaderText = "Map Loader";
-		Label1Text = "Put the path of the maps folder :";
-		SelectMapsFolderText = "Select maps folder";
-		RefreshMapsButtonText = "Refresh Maps";
-		SavePathText = "Save Path";
-		MapsPerLineText = "Maps Per Line :";
-		//context menu strip
-		OpenMapDirText = "Open map directory";
-		DeleteMapText = "Delete map";
-
-		//LauchMode Popup
-		CancelText = "Cancel";
-
-		//Add Map
-		AddMapText = "Add Map";
-		NameText = "Name :";
-		AuthorText = "Author :";
-		MapFilePathText = "Map File Path :";
-		ImagePathText = "Image Path :";
-		SelectFileText = "Select File";
-		FieldEmptyText = "A field is empty !";
-		ConfirmLabelText = "Do you really want to add this map ?";
-		MapAddedSuccessfullyText = "Map added successfully !";
-
-		//2nd Tab
-		DownloadButtonText = "Download";
-		Label3Text = "Search A Workshop :";
-		SearchButtonText = "Search";
-		SearchingText = "Searching...";
-		WorkshopsFoundText = "Workshops Found :";
-		BrowseMapsText = "Browse Maps";
-		Tab3SearchWorkshopText = "Search Workshop (rocketleaguemaps.us)";
-
-
-		//Search Result
-		ResultByText = "By ";
-		ResultSizeText = "Size : ";
-		DownloadMapButtonText = "Download Map";
-
-		//Warnings
-		DirNotExistText = "This directory is not valid !";
-		DownloadFailedText = "Download Failed !" + DownloadFailedErrorText;
-		WantToDawnloadText = "Do you really want to download?\nYou'll not be able to cancel if you start it.";
-		YESButtonText = "YES";
-		NOButtonText = "NO";
-		IsDownloadDingWarningText = "A download is already running !\nYou cannot download 2 workshops at the same time.";
-		PathSavedText = "Path saved successfully !";
-
-		//ExtractMapFiles
-		EMFMessageText1 = "The map isn't extracted from ";
-		EMFMessageText2 = "\nChoose an extract method (you need to click on refresh maps after extracting) :";
-		EMFStillDoesntWorkText = "Still not working";
-		//ExtractManually
-		EMLabelText = "If both of the extract methods didn't work, you need to extract the files manually of ";
-
-		//Download Texutures
-		DLTLabel1Text = "It seems like the workshop textures aren't installed in " + RLCookedPCConsole_Path.string();
-		DLTLabel2Text = "You can still play without the workshop textures but some maps will have some white/weird textures.";
-		DLTMissingFilesText = "Missing Files";
-		DLTTexturesInstalledText = "Workshop textures installed !";
-		CloseText = "Close";
-		DontAskText = "Don't ask me again";
-
-		//File Explorer
-		NewFolderText = "New Folder";
-		ConfirmText = "Confirm";
-		SelectText = "Select";
-	}
-	else
-	{
-		//Menubar
-		SettingsText = "Parametres";
-		MultiplayerText = "Multijoueur";
-		LastUpdateText = "Derniere Maj";
-		JoinCWGText = "Rejoins le serveur discord Community Workshop Games :";
-		OpenCPCCText = "Ouvrir le dossier CookedPCConsole";
-		NoMapsCanBeJoinText = "Aucune map ne peut etre rejoint";
-		MapsJoinableText = "Maps rejoignables";
-		DlTexturesText = "Telecharger les textures";
-		LanguageText = "Langue";
-		ExtractMethodText = "Methode d'extraction";
-		WarningText = "Attention :";
-
-		//Controller settings
-		ControllerText = "Manette";
-		UseControllerText = "Activer La Manette";
-		ControllsText = "Commandes";
-		ScrollSensitivityText = "Sensibilite du defilement";
-		SensitivityText = "Sensibilite";
-		ControllsLitText[0] = "Pouce Gauche + Pouce Droit : ouvrir/fermer le menu";
-		ControllsLitText[1] = "Fleches : naviguer dans les maps";
-		ControllsLitText[2] = "Joystick Gauche : bouger la souris";
-		ControllsLitText[3] = "Joystick Droit : faire defiler";
-		ControllsLitText[4] = "LB/L1 : cliquer";
-		ControllsLitText[5] = "B/O : fermer le menu";
-
-		//1st Tab
-		Tab1MapLoaderText = "Charger Map";
-		Label1Text = "Mets le chemin du dossier des maps :";
-		SelectMapsFolderText = "Choisir Dossier Des Maps";
-		RefreshMapsButtonText = "Rafraichir Les Maps";
-		SavePathText = "Sauvegarder Le Chemin";
-		MapsPerLineText = "Maps Par Ligne :";
-
-		//context menu strip
-		OpenMapDirText = "Ouvrir le dossier de la map";
-		DeleteMapText = "Supprimer la map";
-
-		//LauchMode Popup
-		CancelText = "Annuler";
-
-		//Add Map
-		AddMapText = "Ajouter Map";
-		NameText = "Nom :";
-		AuthorText = "Auteur :";
-		MapFilePathText = "Fichier De La Map :";
-		ImagePathText = "Image :";
-		SelectFileText = "Parcourir";
-		FieldEmptyText = "Un champ est vide !";
-		ConfirmLabelText = "Veux-tu vraiment ajouter cette map ?";
-		MapAddedSuccessfullyText = "Map ajoute avec succes !";
-
-		//2nd Tab
-		DownloadButtonText = "Telecharger";
-		Label3Text = "Rechercher Un Workshop :";
-		SearchButtonText = "Rechercher";
-		SearchingText = "Recherche en cours...";
-		WorkshopsFoundText = "Workshops Trouves :";
-		BrowseMapsText = "Parcourir Les Maps";
-		Tab3SearchWorkshopText = "Rechercher Workshop (rocketleaguemaps.us)";
-
-		//Search Result
-		ResultByText = "Par ";
-		ResultSizeText = "Taille : ";
-		DownloadMapButtonText = "Telecharger La Map";
-
-		//Warnings
-		DirNotExistText = "Ce chemin n'est pas valide !";
-		DownloadFailedText = "Le telechargement a echoue !" + DownloadFailedErrorText;
-		WantToDawnloadText = "Veux-tu vraiment telecharger?\nTu ne pourras plus l'annuler si tu le commence.";
-		YESButtonText = "OUI";
-		NOButtonText = "NON";
-		IsDownloadDingWarningText = "Un telechargement est deja en cours !\nTu ne peux pas telecharger 2 workshops en meme temps.";
-		PathSavedText = "Le chemin a ete sauvegarde !";
-
-
-		//ExtractMapFiles
-		EMFMessageText1 = "La map n'est pas extrait de ";
-		EMFMessageText2 = "\nChoisis une methode d'extraction (rafraichis les maps apres l'extraction) :";
-		EMFStillDoesntWorkText = "Ne fonctionne pas";
-		//ExtractManually
-		EMLabelText = "Si les deux methodes d'extraction n'ont pas fonctionne, tu dois extraire les fichiers manuellement de ";
-
-
-		//Download Texutures
-		DLTLabel1Text = "Les textures des workshops ne semblent pas etre installees dans " + RLCookedPCConsole_Path.string();
-		DLTLabel2Text = "Tu peux toujours jouer sans mais des maps auront des textures blanches/bizarres.";
-		DLTMissingFilesText = "Fichiers Manquants";
-		DLTTexturesInstalledText = "Textures des workshops installees!";
-		CloseText = "Fermer";
-		DontAskText = "Ne plus me demander";
-
-		//File Explorer
-		NewFolderText = "Nouv. Dossier";
-		ConfirmText = "Confirmer";
-		SelectText = "Selectionner";
-	}
-
+	// PERF: Language strings are now set once in ApplyLanguage() (called from
+	// onLoad and when FR is toggled) instead of reassigning ~40 std::strings every frame.
 
 	if (!HasSeeNewUpdateAlert)
 	{
@@ -381,12 +181,14 @@ void Pluginx64::Render()
 				{
 					FR = true;
 					SaveInCFG();
+					ApplyLanguage(); // PERF: update strings immediately on change
 				}
 
 				if (ImGui::Selectable("English"))
 				{
 					FR = false;
 					SaveInCFG();
+					ApplyLanguage(); // PERF: update strings immediately on change
 				}
 				ImGui::EndMenu();
 			}
@@ -459,7 +261,12 @@ void Pluginx64::Render()
 		{
 			ImGui::OpenPopup("DownloadTextures");
 		}
-		renderDownloadTexturesPopup(CheckExist_TexturesFiles());
+		// PERF: Use cached texture check instead of 14 filesystem calls per frame.
+		if (missingTexturesCacheDirty) {
+			cachedMissingTextures = CheckExist_TexturesFiles();
+			missingTexturesCacheDirty = false;
+		}
+		renderDownloadTexturesPopup(cachedMissingTextures);
 
 
 		if (ImGui::Selectable(LastUpdateText.c_str(), false, 0, ImGui::CalcTextSize(LastUpdateText.c_str())))
@@ -502,8 +309,15 @@ void Pluginx64::Render()
 			CenterNexIMGUItItem(628.f);
 			ImGui::SetNextItemWidth(628.f);
 			ImGui::InputText("##workshopurl123", MapsFolderPathBuf, IM_ARRAYSIZE(MapsFolderPathBuf));
+			// PERF: Only recheck path validity when the text field actually changes,
+			// not every frame. fs::exists is expensive under Wine/Proton.
+			if (ImGui::IsItemDeactivatedAfterEdit() || strcmp(MapsFolderPathBuf, cachedPathForValidation) != 0)
+			{
+				cachedPathIsValid = Directory_Or_File_Exists(fs::path(MapsFolderPathBuf));
+				strncpy(cachedPathForValidation, MapsFolderPathBuf, sizeof(cachedPathForValidation));
+			}
 			ImGui::SameLine();
-			if (!Directory_Or_File_Exists(fs::path(MapsFolderPathBuf)))
+			if (!cachedPathIsValid)
 			{
 				ImGui::TextColored(ImVec4(255, 0, 0, 1), DirNotExistText.c_str());
 			}
@@ -544,8 +358,6 @@ void Pluginx64::Render()
 
 			ImGui::SameLine();
 
-			std::vector<std::string> missingTexturesFiles = CheckExist_TexturesFiles();
-
 			if (ImGui::Button(RefreshMapsButtonText.c_str(), ImVec2(151.f, 32.f)))
 			{
 				if (!Directory_Or_File_Exists(fs::path(MapsFolderPathBuf)))
@@ -555,7 +367,9 @@ void Pluginx64::Render()
 				else
 				{
 					RefreshMapsFunct(MapsFolderPathBuf);
-					if (missingTexturesFiles.size() > 0 && dontAsk == 0)
+					// PERF: Refresh texture cache after explicit refresh
+					missingTexturesCacheDirty = true;
+					if (cachedMissingTextures.size() > 0 && dontAsk == 0)
 					{
 						ImGui::OpenPopup("DownloadTextures");
 					}
@@ -563,7 +377,7 @@ void Pluginx64::Render()
 			}
 			renderInfoPopup("Exists?", DirNotExistText.c_str());
 
-			renderDownloadTexturesPopup(missingTexturesFiles);
+			renderDownloadTexturesPopup(cachedMissingTextures);
 
 			ImGui::SameLine();
 
@@ -796,8 +610,10 @@ void Pluginx64::renderMaps(Gamepad controller)
 {
 	mapButtonList.clear();
 
-	std::vector<Map> NoUpk_MapList;
-	std::vector<Map> Good_MapList;
+	// PERF: Use pre-split cached lists built in RefreshMapsFunct instead of
+	// iterating MapList and splitting into two vectors every frame.
+	const std::vector<Map>& NoUpk_MapList = cachedNoUpkMapList;
+	std::vector<Map> Good_MapList = cachedGoodMapList; // local copy for QuickSearch filtering below
 
 	int ID = 0;
 
@@ -807,19 +623,6 @@ void Pluginx64::renderMaps(Gamepad controller)
 		float windowWidth = ImGui::GetContentRegionAvailWidth();
 		float buttonWidth = (windowWidth - ((nbTilesPerLine - 1) * 8)) / nbTilesPerLine;
 		int nbTilesOnTheCurrentLine = 0;
-
-		for (auto map : MapList)
-		{
-			if (map.UpkFile == "NoUpkFound" && map.ZipFile != "EmptyFolder" && map.ZipFile != "NoZipFound")
-			{
-				NoUpk_MapList.push_back(map);
-			}
-
-			if (map.UpkFile != "NoUpkFound" && map.UpkFile != "EmptyFolder")
-			{
-				Good_MapList.push_back(map);
-			}
-		}
 
 		for (auto curMap : NoUpk_MapList)
 		{
