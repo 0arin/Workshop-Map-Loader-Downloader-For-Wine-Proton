@@ -1239,10 +1239,10 @@ void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char ma
 {
 	ImGui::PushID(i);
 
-	RLMAPS_MapResult mapResult = RLMAPS_MapResultList.at(i);
-	std::string mapName = mapResult.Name;
-	std::string mapDescription = mapResult.Description;
-	std::string mapAuthor = mapResult.Author;
+	const RLMAPS_MapResult& mapResult = RLMAPS_MapResultList.at(i);
+	const std::string mapName = mapResult.Name;
+	const std::string mapDescription = mapResult.Description;
+	const std::string mapAuthor = mapResult.Author;
 
 
 	ImGui::BeginChild("##RlmapsResult", ImVec2(190.f, 260.f));
