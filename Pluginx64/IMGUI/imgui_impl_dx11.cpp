@@ -544,8 +544,6 @@ void ImGui_ImplDX11_NewFrame()
     if (!g_pFontSampler)
         ImGui_ImplDX11_CreateDeviceObjects();
 }
-
-// Expose the D3D11 device so plugins can create textures directly.
 ID3D11Device* ImGui_ImplDX11_GetDevice()
 {
     return g_pd3dDevice;
