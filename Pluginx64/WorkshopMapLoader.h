@@ -9,6 +9,10 @@
 
 //#include <WinUser.h>
 
+// Decode raw image bytes (JPEG/PNG/JFIF) via WIC and upload to D3D11.
+// Must be called on the render thread. Returns nullptr on failure.
+ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data);
+
 
 struct Map
 {
@@ -44,8 +48,8 @@ struct RLMAPS_MapResult
 	std::string Author;
 	std::vector<RLMAPS_Release> releases;
 	std::filesystem::path ImagePath; //Stored in bakkesmodFolder/data/WorkshopMapLoader/Search/img/
-	ID3D11ShaderResourceView* Image = nullptr;
-	std::vector<unsigned char> RawImageBytes; // filled by bg thread, uploaded on render thread
+	ID3D11ShaderResourceView* Image = nullptr; // D3D11 texture, created on render thread
+	std::vector<unsigned char> RawImageBytes;  // filled by bg thread, consumed on render thread
 	bool isImageLoaded = false;
 	bool IsDownloadingPreview = false;
 };
