@@ -25,12 +25,14 @@ void Pluginx64::onLoad()
 	// which is the correct path and does not block the game render thread.
 
 	BakkesmodPath = gameWrapper->GetBakkesModPath().string() + "\\";
-	IfNoPreviewImagePath = BakkesmodPath + "data\\WorkshopMapLoader\\Search\\NoPreview.jpg";
+	// FIX: Forward slashes for Wine/Proton compatibility
+	IfNoPreviewImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/NoPreview.jpg";
 
 	std::string RLWin64_Path = std::filesystem::current_path().string();
 	RLCookedPCConsole_Path = RLWin64_Path.substr(0, RLWin64_Path.length() - 14) + "TAGame\\CookedPCConsole";
 
-	std::string Data_WorkshopMapLoader_Path = BakkesmodPath + "data\\WorkshopMapLoader\\";
+	// FIX: Forward slashes for Wine/Proton compatibility
+	std::string Data_WorkshopMapLoader_Path = BakkesmodPath + "data/WorkshopMapLoader/";
 
 	//Load logos
 	RLMAPSLogoImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/rlmapslogo.png", false, true);
@@ -549,7 +551,8 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 
 	cvarManager->log("Map : " + result.Name);
 
-	std::filesystem::path resultImagePath = BakkesmodPath + "data\\WorkshopMapLoader\\Search\\img\\RLMAPS\\" + result.ID + ".jfif";
+	// FIX: Use forward slashes — backslash paths fail silently under Wine/Proton
+	std::filesystem::path resultImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS/" + result.ID + ".jfif";
 
 	if (!Directory_Or_File_Exists(resultImagePath))
 	{
@@ -560,17 +563,20 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	}
 	else
 	{
-		std::shared_ptr<ImageWrapper> resultImage;
-		bool resultisImageLoaded;
-
-		resultImage = std::make_shared<ImageWrapper>(resultImagePath, false, true);
-		resultisImageLoaded = true;
-
+		// FIX: Push result first, then load ImageWrapper on game thread.
+		// ImageWrapper creates a D3D11 texture — must be on the render thread,
+		// especially under Wine/Proton where the D3D context is strict.
 		result.ImagePath = resultImagePath;
-		result.Image = resultImage;
-		result.isImageLoaded = resultisImageLoaded;
-
+		result.isImageLoaded = false;
+		result.IsDownloadingPreview = false;
 		RLMAPS_MapResultList.push_back(result);
+		int cachedIndex = (int)RLMAPS_MapResultList.size() - 1;
+
+		gameWrapper->Execute([this, resultImagePath, cachedIndex](GameWrapper* gw)
+			{
+				RLMAPS_MapResultList[cachedIndex].Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
+				RLMAPS_MapResultList[cachedIndex].isImageLoaded = true;
+			});
 	}
 }
 
@@ -1018,35 +1024,52 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 {
 	std::string download_url = downloadUrl;
 	std::string File_Path = filePath;
-	std::wstring w_URL = s2ws(download_url);
-	LPCWSTR L_URL = w_URL.c_str();
-	std::wstring w_PATH = s2ws(File_Path);
-	LPCWSTR L_PATH = w_PATH.c_str();
 
+	// FIX: Use forward slashes — URLDownloadToFile (used by the L_PATH overload)
+	// fails silently with backslash paths under Wine/Proton. We also switch to the
+	// binary data callback overload and write the file ourselves with std::ofstream,
+	// which is reliable cross-platform.
+	std::replace(File_Path.begin(), File_Path.end(), '\\', '/');
 
 	CurlRequest req;
 	req.url = download_url;
 
-	HttpWrapper::SendCurlRequest(req, L_PATH, [this, File_Path, mapResultIndex, filePath](int code, std::wstring out_path)
+	HttpWrapper::SendCurlRequest(req, [this, File_Path, mapResultIndex](int code, char* data, size_t size)
 		{
-			cvarManager->log("PREVIEW DONWLOADED : " + File_Path);
+			if (code != 200 || size == 0)
+			{
+				cvarManager->log("PREVIEW DOWNLOAD FAILED code=" + std::to_string(code) + " for index " + std::to_string(mapResultIndex));
+				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
+				return;
+			}
 
-			Sleep(100);
+			// Write the image file ourselves — reliable under Wine
+			std::ofstream imgFile(File_Path, std::ios_base::binary);
+			if (imgFile)
+			{
+				imgFile.write(data, size);
+				imgFile.close();
+				cvarManager->log("PREVIEW SAVED : " + File_Path);
+			}
+			else
+			{
+				cvarManager->log("PREVIEW SAVE FAILED : " + File_Path);
+				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
+				return;
+			}
 
 			RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
 
-
-			std::shared_ptr<ImageWrapper> resultImage;
-			bool resultisImageLoaded;
-
-			resultImage = std::make_shared<ImageWrapper>(filePath, false, true);
-			resultisImageLoaded = true;
-
-			RLMAPS_MapResultList[mapResultIndex].ImagePath = filePath;
-			RLMAPS_MapResultList[mapResultIndex].Image = resultImage;
-			RLMAPS_MapResultList[mapResultIndex].isImageLoaded = resultisImageLoaded;
-
-			cvarManager->log("Downloaded/loaded preview for " + RLMAPS_MapResultList[mapResultIndex].Name);
+			// FIX: ImageWrapper creates a D3D11 texture and must be constructed on
+			// the game/render thread. Under Wine/Proton the D3D context is strict
+			// about this — constructing off-thread produces a null texture silently.
+			gameWrapper->Execute([this, File_Path, mapResultIndex](GameWrapper* gw)
+				{
+					RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
+					RLMAPS_MapResultList[mapResultIndex].Image = std::make_shared<ImageWrapper>(File_Path, false, true);
+					RLMAPS_MapResultList[mapResultIndex].isImageLoaded = true;
+					cvarManager->log("Preview loaded for " + RLMAPS_MapResultList[mapResultIndex].Name);
+				});
 		});
 
 }
