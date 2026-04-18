@@ -20,6 +20,7 @@
 #pragma comment(lib, "shlwapi.lib")
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX  // prevent windows.h from defining min/max macros that break std::min/max
 #define _CRT_SECURE_NO_WARNINGS
 #include "bakkesmod/plugin/bakkesmodplugin.h"
 #include <cpr/cpr.h>
