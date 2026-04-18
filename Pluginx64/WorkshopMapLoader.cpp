@@ -575,15 +575,18 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 	RLMAPS_Searching = true;
 
 	// Release any existing D3D11 SRV textures before clearing the list
-	for (auto& result : RLMAPS_MapResultList)
 	{
-		if (result.Image)
+		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+		for (auto& result : RLMAPS_MapResultList)
 		{
-			result.Image->Release();
-			result.Image = nullptr;
+			if (result.Image)
+			{
+				result.Image->Release();
+				result.Image = nullptr;
+			}
 		}
+		RLMAPS_MapResultList.clear();
 	}
-	RLMAPS_MapResultList.clear();
 	RLMAPS_PageSelected = IndexPage;
 	if (IndexPage == 1)
 	{
@@ -605,6 +608,10 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 
 	RLMAPS_NumberOfMapsFound = maps.size();
 
+	// Reserve exact capacity so concurrent push_backs never trigger reallocation.
+	// This means .at(i) on the render thread is always valid once the element exists,
+	// even without holding the mutex during the draw loop.
+	RLMAPS_MapResultList.reserve(maps.size());
 
 	for (int index = 0; index < maps.size(); ++index)
 	{
@@ -614,8 +621,14 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 		Sleep(100);
 	}
 
-	while (RLMAPS_MapResultList.size() != maps.size())
+	while (true)
 	{
+		std::size_t currentSize;
+		{
+			std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+			currentSize = RLMAPS_MapResultList.size();
+		}
+		if (currentSize == static_cast<std::size_t>(maps.size())) break;
 		Sleep(10);
 	}
 
@@ -676,8 +689,13 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	{
 		result.IsDownloadingPreview = true;
 
-		RLMAPS_MapResultList.push_back(result);
-		DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), index);
+		int listIndex;
+		{
+			std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+			RLMAPS_MapResultList.push_back(result);
+			listIndex = (int)RLMAPS_MapResultList.size() - 1;
+		}
+		DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), listIndex);
 	}
 	else
 	{
@@ -693,6 +711,7 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 				std::istreambuf_iterator<char>());
 		}
 
+		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 		RLMAPS_MapResultList.push_back(result);
 	}
 }
@@ -1152,6 +1171,7 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 			if (code != 200 || size == 0)
 			{
 				cvarManager->log("PREVIEW DOWNLOAD FAILED code=" + std::to_string(code) + " for index " + std::to_string(mapResultIndex));
+				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
 				return;
 			}
@@ -1167,17 +1187,23 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 			else
 			{
 				cvarManager->log("PREVIEW SAVE FAILED : " + File_Path);
+				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
 				return;
 			}
 
 			// Store raw bytes — render thread picks them up in Render() and calls
 			// LoadTextureFromMemory() to upload to GPU. No gameWrapper->Execute needed.
-			RLMAPS_MapResultList[mapResultIndex].RawImageBytes.assign(data, data + size);
-			RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
-			RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
+			std::string mapName;
+			{
+				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+				RLMAPS_MapResultList[mapResultIndex].RawImageBytes.assign(data, data + size);
+				RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
+				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
+				mapName = RLMAPS_MapResultList[mapResultIndex].Name;
+			}
 
-			cvarManager->log("Preview bytes ready for GPU upload: " + RLMAPS_MapResultList[mapResultIndex].Name);
+			cvarManager->log("Preview bytes ready for GPU upload: " + mapName);
 		});
 
 }
