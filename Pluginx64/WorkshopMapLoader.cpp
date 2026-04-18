@@ -236,6 +236,20 @@ void Pluginx64::onLoad()
 		SaveInCFG();
 	}
 
+	// Ensure the browse-tab image cache directory exists.
+	// Without this, DownloadPreviewImage ofstream silently fails and images never load.
+	{
+		std::string imgCacheDir = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS";
+		try
+		{
+			fs::create_directories(fs::path(imgCacheDir));
+		}
+		catch (const std::exception& ex)
+		{
+			cvarManager->log(std::string("Failed to create image cache dir: ") + ex.what());
+		}
+	}
+
 	// PERF: Apply language strings once on load instead of every frame in Render()
 	ApplyLanguage();
 }
@@ -1188,7 +1202,12 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
-			// Write image to disk for caching
+			// Ensure parent directory exists (safety net in case onLoad creation failed).
+			try { fs::create_directories(fs::path(File_Path).parent_path()); }
+			catch (...) {}
+
+			// Write image to disk for caching. If disk write fails we still store the
+			// raw bytes in memory so the image renders for this session.
 			std::ofstream imgFile(File_Path, std::ios_base::binary);
 			if (imgFile)
 			{
@@ -1198,10 +1217,9 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 			}
 			else
 			{
-				cvarManager->log("PREVIEW SAVE FAILED : " + File_Path);
-				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
-				return;
+				cvarManager->log("PREVIEW SAVE FAILED (will render from memory): " + File_Path);
+				// Do NOT return — fall through to store RawImageBytes so the image
+				// still shows in the browse tab for this session.
 			}
 
 			// Store raw bytes — render thread picks them up in Render() and calls
