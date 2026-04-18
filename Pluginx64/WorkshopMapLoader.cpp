@@ -116,7 +116,8 @@ void Pluginx64::onLoad()
 		SaveInCFG();
 	}
 
-
+	// PERF: Apply language strings once on load instead of every frame in Render()
+	ApplyLanguage();
 }
 
 
@@ -328,7 +329,16 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		cvarManager->log("");
 	}
 
-
+	// PERF: Rebuild cached split lists so Render() doesn't do it every frame
+	cachedNoUpkMapList.clear();
+	cachedGoodMapList.clear();
+	for (auto& map : MapList)
+	{
+		if (map.UpkFile == "NoUpkFound" && map.ZipFile != "EmptyFolder" && map.ZipFile != "NoZipFound")
+			cachedNoUpkMapList.push_back(map);
+		if (map.UpkFile != "NoUpkFound" && map.UpkFile != "EmptyFolder")
+			cachedGoodMapList.push_back(map);
+	}
 }
 
 
@@ -1158,5 +1168,202 @@ std::vector<std::string> Pluginx64::GetDrives()
 	return Drives;
 }
 
+
+void Pluginx64::ApplyLanguage()
+{
+	if (!FR)
+	{
+		//Menubar
+		SettingsText = "Settings";
+		MultiplayerText = "Multiplayer";
+		LastUpdateText = "Last Update";
+		JoinCWGText = "Join Community Workshop Games discord server :";
+		OpenCPCCText = "Open CookedPCConsole Directory";
+		NoMapsCanBeJoinText = "No maps can be joined";
+		MapsJoinableText = "Maps joinable";
+		DlTexturesText = "Download Textures";
+		LanguageText = "Language";
+		ExtractMethodText = "Extract Method";
+		WarningText = "Warning :";
+
+		//Controller settings
+		ControllerText = "Controller";
+		UseControllerText = "Use Controller";
+		ControllsText = "Controlls";
+		ScrollSensitivityText = "Scroll Sensitivity";
+		SensitivityText = "Sensitivity";
+		ControllsLitText[0] = "Left Thumb + Right Thumb : open/close the menu";
+		ControllsLitText[1] = "DPAD arrows : navigate through the maps";
+		ControllsLitText[2] = "Left joystick : move the cursor";
+		ControllsLitText[3] = "Right joystick : scroll";
+		ControllsLitText[4] = "LB/L1 : click";
+		ControllsLitText[5] = "B/O : close the menu";
+
+		//1st Tab
+		Tab1MapLoaderText = "Map Loader";
+		Label1Text = "Put the path of the maps folder :";
+		SelectMapsFolderText = "Select maps folder";
+		RefreshMapsButtonText = "Refresh Maps";
+		SavePathText = "Save Path";
+		MapsPerLineText = "Maps Per Line :";
+		//context menu strip
+		OpenMapDirText = "Open map directory";
+		DeleteMapText = "Delete map";
+
+		//LauchMode Popup
+		CancelText = "Cancel";
+
+		//Add Map
+		AddMapText = "Add Map";
+		NameText = "Name :";
+		AuthorText = "Author :";
+		MapFilePathText = "Map File Path :";
+		ImagePathText = "Image Path :";
+		SelectFileText = "Select File";
+		FieldEmptyText = "A field is empty !";
+		ConfirmLabelText = "Do you really want to add this map ?";
+		MapAddedSuccessfullyText = "Map added successfully !";
+
+		//2nd Tab
+		DownloadButtonText = "Download";
+		Label3Text = "Search A Workshop :";
+		SearchButtonText = "Search";
+		SearchingText = "Searching...";
+		WorkshopsFoundText = "Workshops Found :";
+		BrowseMapsText = "Browse Maps";
+		Tab3SearchWorkshopText = "Search Workshop (rocketleaguemaps.us)";
+
+		//Search Result
+		ResultByText = "By ";
+		ResultSizeText = "Size : ";
+		DownloadMapButtonText = "Download Map";
+
+		//Warnings
+		DirNotExistText = "This directory is not valid !";
+		DownloadFailedText = "Download Failed !" + DownloadFailedErrorText;
+		WantToDawnloadText = "Do you really want to download?\nYou'll not be able to cancel if you start it.";
+		YESButtonText = "YES";
+		NOButtonText = "NO";
+		IsDownloadDingWarningText = "A download is already running !\nYou cannot download 2 workshops at the same time.";
+		PathSavedText = "Path saved successfully !";
+
+		//ExtractMapFiles
+		EMFMessageText1 = "The map isn't extracted from ";
+		EMFMessageText2 = "\nChoose an extract method (you need to click on refresh maps after extracting) :";
+		EMFStillDoesntWorkText = "Still not working";
+		//ExtractManually
+		EMLabelText = "If both of the extract methods didn't work, you need to extract the files manually of ";
+
+		//Download Texutures
+		DLTLabel1Text = "It seems like the workshop textures aren't installed in " + RLCookedPCConsole_Path.string();
+		DLTLabel2Text = "You can still play without the workshop textures but some maps will have some white/weird textures.";
+		DLTMissingFilesText = "Missing Files";
+		DLTTexturesInstalledText = "Workshop textures installed !";
+		CloseText = "Close";
+		DontAskText = "Don't ask me again";
+
+		//File Explorer
+		NewFolderText = "New Folder";
+		ConfirmText = "Confirm";
+		SelectText = "Select";
+	}
+	else
+	{
+		//Menubar
+		SettingsText = "Parametres";
+		MultiplayerText = "Multijoueur";
+		LastUpdateText = "Derniere Maj";
+		JoinCWGText = "Rejoins le serveur discord Community Workshop Games :";
+		OpenCPCCText = "Ouvrir le dossier CookedPCConsole";
+		NoMapsCanBeJoinText = "Aucune map ne peut etre rejoint";
+		MapsJoinableText = "Maps rejoignables";
+		DlTexturesText = "Telecharger les textures";
+		LanguageText = "Langue";
+		ExtractMethodText = "Methode d'extraction";
+		WarningText = "Attention :";
+
+		//Controller settings
+		ControllerText = "Manette";
+		UseControllerText = "Activer La Manette";
+		ControllsText = "Commandes";
+		ScrollSensitivityText = "Sensibilite du defilement";
+		SensitivityText = "Sensibilite";
+		ControllsLitText[0] = "Pouce Gauche + Pouce Droit : ouvrir/fermer le menu";
+		ControllsLitText[1] = "Fleches : naviguer dans les maps";
+		ControllsLitText[2] = "Joystick Gauche : bouger la souris";
+		ControllsLitText[3] = "Joystick Droit : faire defiler";
+		ControllsLitText[4] = "LB/L1 : cliquer";
+		ControllsLitText[5] = "B/O : fermer le menu";
+
+		//1st Tab
+		Tab1MapLoaderText = "Charger Map";
+		Label1Text = "Mets le chemin du dossier des maps :";
+		SelectMapsFolderText = "Choisir Dossier Des Maps";
+		RefreshMapsButtonText = "Rafraichir Les Maps";
+		SavePathText = "Sauvegarder Le Chemin";
+		MapsPerLineText = "Maps Par Ligne :";
+
+		//context menu strip
+		OpenMapDirText = "Ouvrir le dossier de la map";
+		DeleteMapText = "Supprimer la map";
+
+		//LauchMode Popup
+		CancelText = "Annuler";
+
+		//Add Map
+		AddMapText = "Ajouter Map";
+		NameText = "Nom :";
+		AuthorText = "Auteur :";
+		MapFilePathText = "Fichier De La Map :";
+		ImagePathText = "Image :";
+		SelectFileText = "Parcourir";
+		FieldEmptyText = "Un champ est vide !";
+		ConfirmLabelText = "Veux-tu vraiment ajouter cette map ?";
+		MapAddedSuccessfullyText = "Map ajoute avec succes !";
+
+		//2nd Tab
+		DownloadButtonText = "Telecharger";
+		Label3Text = "Rechercher Un Workshop :";
+		SearchButtonText = "Rechercher";
+		SearchingText = "Recherche en cours...";
+		WorkshopsFoundText = "Workshops Trouves :";
+		BrowseMapsText = "Parcourir Les Maps";
+		Tab3SearchWorkshopText = "Rechercher Workshop (rocketleaguemaps.us)";
+
+		//Search Result
+		ResultByText = "Par ";
+		ResultSizeText = "Taille : ";
+		DownloadMapButtonText = "Telecharger La Map";
+
+		//Warnings
+		DirNotExistText = "Ce chemin n'est pas valide !";
+		DownloadFailedText = "Le telechargement a echoue !" + DownloadFailedErrorText;
+		WantToDawnloadText = "Veux-tu vraiment telecharger?\nTu ne pourras plus l'annuler si tu le commence.";
+		YESButtonText = "OUI";
+		NOButtonText = "NON";
+		IsDownloadDingWarningText = "Un telechargement est deja en cours !\nTu ne peux pas telecharger 2 workshops en meme temps.";
+		PathSavedText = "Le chemin a ete sauvegarde !";
+
+		//ExtractMapFiles
+		EMFMessageText1 = "La map n'est pas extrait de ";
+		EMFMessageText2 = "\nChoisis une methode d'extraction (rafraichis les maps apres l'extraction) :";
+		EMFStillDoesntWorkText = "Ne fonctionne pas";
+		//ExtractManually
+		EMLabelText = "Si les deux methodes d'extraction n'ont pas fonctionne, tu dois extraire les fichiers manuellement de ";
+
+		//Download Texutures
+		DLTLabel1Text = "Les textures des workshops ne semblent pas etre installees dans " + RLCookedPCConsole_Path.string();
+		DLTLabel2Text = "Tu peux toujours jouer sans mais des maps auront des textures blanches/bizarres.";
+		DLTMissingFilesText = "Fichiers Manquants";
+		DLTTexturesInstalledText = "Textures des workshops installees!";
+		CloseText = "Fermer";
+		DontAskText = "Ne plus me demander";
+
+		//File Explorer
+		NewFolderText = "Nouv. Dossier";
+		ConfirmText = "Confirmer";
+		SelectText = "Selectionner";
+	}
+}
 
 void Pluginx64::onUnload() {}
