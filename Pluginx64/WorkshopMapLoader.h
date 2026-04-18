@@ -48,8 +48,7 @@ struct RLMAPS_MapResult
 	std::string Author;
 	std::vector<RLMAPS_Release> releases;
 	std::filesystem::path ImagePath; //Stored in bakkesmodFolder/data/WorkshopMapLoader/Search/img/
-	ID3D11ShaderResourceView* Image = nullptr; // D3D11 texture, created on render thread
-	std::vector<unsigned char> RawImageBytes;  // filled by bg thread, consumed on render thread
+	std::shared_ptr<ImageWrapper> Image; // loaded via ImageWrapper, same as local maps
 	bool isImageLoaded = false;
 	bool IsDownloadingPreview = false;
 };
