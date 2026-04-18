@@ -113,6 +113,18 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	tex->Release();
 	if (FAILED(hr)) return nullptr;
 
+	// Flush the immediate context so Wine/Proton's D3D11 translation layer
+	// (DXVK or wined3d) actually submits the texture to the GPU before the
+	// next frame tries to sample it. Without this, newly created SRVs are
+	// invisible in the browse tab under Wine/Proton due to lazy batching.
+	ID3D11DeviceContext* immediateCtx = nullptr;
+	device->GetImmediateContext(&immediateCtx);
+	if (immediateCtx)
+	{
+		immediateCtx->Flush();
+		immediateCtx->Release();
+	}
+
 	return srv;
 }
 
