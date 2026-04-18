@@ -38,6 +38,7 @@ namespace fs = std::filesystem;
 #include <iostream>
 #include <cstddef>
 #include <thread>
+#include <mutex>
 #include <filesystem>
 
 #include "IMGUI/imgui.h"
