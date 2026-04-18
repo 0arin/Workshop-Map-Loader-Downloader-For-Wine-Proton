@@ -11,7 +11,13 @@
 #include <urlmon.h>                 //Needed for the URLDownloadToFile() function
 #pragma comment(lib, "urlmon.lib")  //Needed for the URLDownloadToFile() function
 #pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "gdiplus.lib")
+
+// GDI+ must be included before WIN32_LEAN_AND_MEAN is defined,
+// because it needs GDI types that LEAN_AND_MEAN strips out.
+#include <gdiplus.h>
+#include <shlwapi.h>
+#pragma comment(lib, "shlwapi.lib")
 
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
@@ -20,7 +26,6 @@
 #include <curl/curl.h>
 #include <json/json.h>
 #include <d3d11.h>
-#include <wincodec.h>
 
 namespace fs = std::filesystem;
 
