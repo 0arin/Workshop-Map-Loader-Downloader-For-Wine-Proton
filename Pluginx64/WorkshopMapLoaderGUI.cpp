@@ -1,309 +1,622 @@
 #include "pch.h"
 #include "WorkshopMapLoader.h"
 #include "IMGUI/imgui_internal.h"
+
 namespace fs = std::filesystem;
+
 
 char Pluginx64::MapsFolderPathBuf[200];
 bool Pluginx64::FR = false;
 int RLMAPS_SearchWorkshopDisplayed = 0;
+
+
+
+
 float heightMutators = 35.f;
 float heightHostGamePopup = 194.f;
 
-// PERF: Removed dead global ImGui calls...
+// PERF: Removed dead global ImGui calls that ran at DLL load time before any
+// ImGui context existed. windowSizeXBefore/Y were never used.
+
 
 void Pluginx64::Render()
 {
-    // Upload pending preview textures on the render thread
-    // This fixes freezing/low FPS on Wine/Proton
-    for (auto& result : RLMAPS_MapResultList)
-    {
-        if (result.Image == nullptr && !result.RawImageBytes.empty())
-        {
-            // LoadTextureFromMemory is declared in WorkshopMapLoader.h / .cpp
-            result.Image = LoadTextureFromMemory(result.RawImageBytes);
-            result.RawImageBytes.clear();
-            result.RawImageBytes.shrink_to_fit();
-        }
-    }
+	// Upload any pending preview textures on the render thread.
+	// Background threads store raw image bytes in RawImageBytes; we decode and
+	// upload here where the D3D11 device context is guaranteed to be current.
+	for (auto& result : RLMAPS_MapResultList)
+	{
+		if (result.Image == nullptr && !result.RawImageBytes.empty())
+		{
+			result.Image = LoadTextureFromMemory(result.RawImageBytes);
+			result.RawImageBytes.clear();
+			result.RawImageBytes.shrink_to_fit();
+			if (result.Image != nullptr)
+				result.isImageLoaded = true;
+		}
+	}
 
-    // The rest of your original Render() code stays exactly the same from here:
-    if (UseController)
-        checkOpenMenuWithController(CanvasWrapper(0));
+	// PERF: Guard controller check so XInputGetState (expensive under Wine) is
+	// only called when the feature is actually enabled.
+	if (UseController)
+		checkOpenMenuWithController(CanvasWrapper(0));
 
-    ImGui::SetNextWindowSizeConstraints(ImVec2(1326.f, 690.f), ImVec2(1920.f, 1080.f));
-    if (!ImGui::Begin(menuTitle_.c_str(), &isWindowOpen_, ImGuiWindowFlags_MenuBar))
-    {
-        ImGui::End();
-        return;
-    }
+	// PERF: Removed dead clipboard block. OpenClipboard/GetClipboardData crossed
+	// the Win32<->X11 boundary every frame under Wine, and the result was never used.
 
-    // ... [ALL your original code from Gamepad controller1 = ... down to the end of Render()]
-    // (including all tabs, menus, renderMaps, etc.)
-    // Do NOT paste the two RLMAPS_ functions again here.
-}
 
-    Gamepad controller1 = Gamepad(1);
-    controller1.Update();
-    if (controller1.Connected())
-    {
-        float stickX = controller1.LeftStick_X();
-        float stickY = controller1.LeftStick_Y();
-        POINT point;
-        GetCursorPos(&point);
-        static bool L1WasPressed = false;
-        static bool BWasPressed = false;
-        if (controller1.checkButtonPress(XINPUT_GAMEPAD_LEFT_SHOULDER) && !L1WasPressed) {
-            cvarManager->log("Button L1 is pressed");
-            mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); //Left click down
-            L1WasPressed = true;
-        }
-        else if (!controller1.checkButtonPress(XINPUT_GAMEPAD_LEFT_SHOULDER) && L1WasPressed)
-        {
-            mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); //Left click realease
-            cvarManager->log("Button L1 is realeased");
-            L1WasPressed = false;
-        }
-        if (controller1.checkButtonPress(XINPUT_GAMEPAD_B) && !BWasPressed) {
-            cvarManager->log("Button B is pressed");
-            BWasPressed = true;
-        }
-        else if (!controller1.checkButtonPress(XINPUT_GAMEPAD_B) && BWasPressed)
-        {
-            isWindowOpen_ = false;
-            cvarManager->log("Button B is realeased");
-            BWasPressed = false;
-        }
-        if (!controller1.LStick_InDeadzone())
-        {
-            int pixelsX = 0;
-            int pixelsY = 0;
-            pixelsX = stickX * ControllerSensitivity;
-            pixelsY = stickY * ControllerSensitivity;
-            SetCursorPos(point.x + pixelsX, point.y - pixelsY);
-        }
-    }
 
-    //Ctrl + F
-    static bool CtrlFPressed = false;
-    if ((GetKeyState(VK_CONTROL) & 0x8000 && GetKeyState('F') & 0x8000) && !CtrlFPressed)
-    {
-        CtrlFPressed = true;
-    }
-    else if(!(GetKeyState(VK_CONTROL) & 0x8000 && GetKeyState('F') & 0x8000) && CtrlFPressed)
-    {
-        strncpy(QuickSearch_KeyWordBuf, "", IM_ARRAYSIZE(QuickSearch_KeyWordBuf));
-        if (!isQuickSearchDisplayed)
-        {
-            isQuickSearchDisplayed = true;
-        }
-        else
-        {
-            isQuickSearchDisplayed = false;
-        }
-        CtrlFPressed = false;
-    }
+	ImGui::SetNextWindowSizeConstraints(ImVec2(1326.f, 690.f), ImVec2(1920.f, 1080.f));
 
-    // PERF: Language strings are now set once in ApplyLanguage() ...
-    if (!HasSeeNewUpdateAlert)
-    {
-        ImGui::OpenPopup("New Update");
-    }
-    renderNewUpdatePopup();
+	if (!ImGui::Begin(menuTitle_.c_str(), &isWindowOpen_, ImGuiWindowFlags_MenuBar))
+	{
+		// Early out if the window is collapsed, as an optimization.
+		ImGui::End();
+		return;
+	}
 
-    if (AddedMapSccuessfully)
-    {
-        ImGui::OpenPopup("Add Map Successfull");
-        AddedMapSccuessfully = false;
-    }
-    renderInfoPopup("Add Map Successfull", MapAddedSuccessfullyText.c_str());
+	Gamepad controller1 = Gamepad(1);
 
-    if (ImGui::BeginMenuBar())
-    {
-        // ... [All your menu bar code stays exactly the same - no changes here]
-        if (ImGui::BeginMenu(SettingsText.c_str()))
-        {
-            // (your settings menu code)
-            if (ImGui::BeginMenu(ExtractMethodText.c_str()))
-            {
-                if (ImGui::Selectable("Batch File Method"))
-                {
-                    unzipMethod = "Bat";
-                    if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
-                    {
-                        SaveInCFG();
-                    }
-                }
-                if (unzipMethod == "Bat")
-                {
-                    ImGui::SameLine();
-                    ImGui::Text(" : Selected");
-                }
-                if (ImGui::Selectable("Powershell Method"))
-                {
-                    unzipMethod = "Powershell";
-                    if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
-                    {
-                        SaveInCFG();
-                    }
-                }
-                if (unzipMethod == "Powershell")
-                {
-                    ImGui::SameLine();
-                    ImGui::Text(" : Selected");
-                }
-                ImGui::EndMenu();
-            }
-            // ... rest of menu bar continues unchanged
-            // (I kept it short here for brevity - keep all your original menu code)
-        }
-        // ... continue with all other menus (Multiplayer, Support, Credits, etc.)
-        ImGui::EndMenuBar();
-    }
+	controller1.Update();
+	if (controller1.Connected())
+	{
+		float stickX = controller1.LeftStick_X();
+		float stickY = controller1.LeftStick_Y();
 
-    if (ImGui::BeginTabBar("TabBar"))
-    {
-        if (ImGui::BeginTabItem(Tab1MapLoaderText.c_str()))
-        {
-            // ... all your Map Loader tab code (unchanged)
-            renderQuickSearch();
-            renderMaps(controller1);
-            ImGui::EndTabItem();
-        }
+		POINT point;
+		GetCursorPos(&point);
 
-        if (ImGui::BeginTabItem(Tab3SearchWorkshopText.c_str()))
-        {
-            // ... all your Search Workshop tab code up to the child (unchanged)
-            ImGui::Separator();
-            ImGui::BeginChild("##RLMAPSSearchWorkshopMapsResults");
-            {
-                ImGui::Text("%s %d / %d", WorkshopsFoundText.c_str(), RLMAPS_SearchWorkshopDisplayed, RLMAPS_NumberOfMapsFound);
-                // ... pagination buttons (unchanged)
+		static bool L1WasPressed = false;
+		static bool BWasPressed = false;
 
-                ImGui::NewLine();
-                ImGui::NewLine();
-                RLMAPS_renderSearchWorkshopResults(MapsFolderPathBuf);
-                ImGui::EndChild();
-            }
-            ImGui::EndTabItem();
-        }
-        ImGui::EndTabBar();
-    }
+		if (controller1.checkButtonPress(XINPUT_GAMEPAD_LEFT_SHOULDER) && !L1WasPressed) {
+			cvarManager->log("Button L1 is pressed");
+			mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0); //Left click down
+			L1WasPressed = true;
+		}
+		else if (!controller1.checkButtonPress(XINPUT_GAMEPAD_LEFT_SHOULDER) && L1WasPressed)
+		{
+			mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0); //Left click realease
 
-    ImGui::End();
+			cvarManager->log("Button L1 is realeased");
+			L1WasPressed = false;
+		}
 
-    if (!isWindowOpen_)
-    {
-        cvarManager->executeCommand("togglemenu " + GetMenuName());
-    }
-}
 
-// ==================== The two functions that were updated ====================
+		if (controller1.checkButtonPress(XINPUT_GAMEPAD_B) && !BWasPressed) {
+			cvarManager->log("Button B is pressed");
+			BWasPressed = true;
+		}
+		else if (!controller1.checkButtonPress(XINPUT_GAMEPAD_B) && BWasPressed)
+		{
+			isWindowOpen_ = false;
+			cvarManager->log("Button B is realeased");
+			BWasPressed = false;
+		}
 
-void Pluginx64::RLMAPS_renderSearchWorkshopResults(static char mapspath[200])
-{
-    int LinesNb = 0;
-    RLMAPS_SearchWorkshopDisplayed = 0;
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    int nbResultPerLine = 4;
-    if (ImGui::GetWindowWidth() > 1560 && ImGui::GetWindowWidth() < 1830)
-    {
-        nbResultPerLine = 5;
-    }
-    else if (ImGui::GetWindowWidth() >= 1830)
-    {
-        nbResultPerLine = 6;
-    }
 
-    for (int i = 0; i < RLMAPS_MapResultList.size(); i++)
-    {
-        if (LinesNb < nbResultPerLine)
-        {
-            RLMAPS_RenderAResult(i, draw_list, mapspath);
-            ImGui::SameLine();
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 73.f);
-            LinesNb++;
-        }
-        else
-        {
-            RLMAPS_RenderAResult(i, draw_list, mapspath);
-            ImGui::NewLine();
-            LinesNb = 0;
-        }
-        RLMAPS_SearchWorkshopDisplayed++;
-    }
-}
+		if (!controller1.LStick_InDeadzone())
+		{
+			int pixelsX = 0;
+			int pixelsY = 0;
 
-void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char mapspath[200])
-{
-    ImGui::PushID(i);
-    RLMAPS_MapResult mapResult = RLMAPS_MapResultList.at(i);
-    std::string mapName = mapResult.Name;
-    std::string mapDescription = mapResult.Description;
-    std::string mapAuthor = mapResult.Author;
+			pixelsX = stickX * ControllerSensitivity;
+			pixelsY = stickY * ControllerSensitivity;
 
-    ImGui::BeginChild("##RlmapsResult", ImVec2(190.f, 260.f));
-    {
-        ImGui::BeginGroup();
-        {
-            ImVec2 TopCornerLeft = ImGui::GetCursorScreenPos();
-            ImVec2 RectFilled_p_max = ImVec2(TopCornerLeft.x + 190.f, TopCornerLeft.y + 260.f);
-            ImVec2 ImageP_Min = ImVec2(TopCornerLeft.x + 6.f, TopCornerLeft.y + 6.f);
-            ImVec2 ImageP_Max = ImVec2(TopCornerLeft.x + 184.f, TopCornerLeft.y + 179.f);
+			SetCursorPos(point.x + pixelsX, point.y - pixelsY);
+		}
+	}
+	
 
-            drawList->AddRectFilled(TopCornerLeft, RectFilled_p_max, ImColor(44, 75, 113, 255), 5.f, 15);
-            drawList->AddRect(ImageP_Min, ImageP_Max, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
+	//Ctrl + F
+	static bool CtrlFPressed = false;
 
-            // Safe thumbnail rendering for Wine/Proton
-            if (mapResult.isImageLoaded == true && mapResult.Image != nullptr)
-            {
-                drawList->AddImage((ImTextureID)mapResult.Image, ImageP_Min, ImageP_Max);
-            }
+	if ((GetKeyState(VK_CONTROL) & 0x8000 && GetKeyState('F') & 0x8000) && !CtrlFPressed)
+	{
+		CtrlFPressed = true;
+	}
+	else if(!(GetKeyState(VK_CONTROL) & 0x8000 && GetKeyState('F') & 0x8000) && CtrlFPressed)
+	{
+		strncpy(QuickSearch_KeyWordBuf, "", IM_ARRAYSIZE(QuickSearch_KeyWordBuf));
 
-            std::string GoodMapName = mapName;
-            if (ImGui::CalcTextSize(GoodMapName.c_str()).x > (186.f * 0.982f))
-            {
-                GoodMapName = LimitTextSize(GoodMapName, (186.f * 0.982f) - ImGui::CalcTextSize("...").x) + "...";
-            }
-            drawList->AddText(ImVec2(TopCornerLeft.x + 4.f, TopCornerLeft.y + 185.f), ImColor(255, 255, 255, 255), GoodMapName.c_str());
-            drawList->AddText(ImVec2(TopCornerLeft.x + 4.f, TopCornerLeft.y + 215.f), ImColor(255, 255, 255, 255),
-                std::string(ResultByText.c_str() + mapAuthor).c_str());
+		if (!isQuickSearchDisplayed)
+		{
+			isQuickSearchDisplayed = true;
+		}
+		else
+		{
+			isQuickSearchDisplayed = false;
+		}
 
-            ImGui::SetCursorScreenPos(ImVec2(TopCornerLeft.x + 4.f, TopCornerLeft.y + 235.f));
-            if (ImGui::Button(DownloadMapButtonText.c_str(), ImVec2(182, 20)))
-            {
-                if (RLMAPS_IsDownloadingWorkshop == false && IsRetrievingWorkshopFiles == false && Directory_Or_File_Exists(fs::path(mapspath)))
-                {
-                    ImGui::OpenPopup("Releases");
-                }
-            }
-            renderReleases(mapResult);
-            renderInfoPopup("Downloading?", IsDownloadDingWarningText.c_str());
-            renderInfoPopup("Exists?", DirNotExistText.c_str());
+		CtrlFPressed = false;
+	}
 
-            ImGui::EndGroup();
 
-            if (ImGui::IsItemHovered())
-            {
-                std::string GoodDescription = mapDescription;
-                if (mapDescription.length() > 150)
-                {
-                    GoodDescription.insert(150, "\n");
-                    if (mapDescription.length() > 280)
-                    {
-                        GoodDescription.erase(280);
-                        GoodDescription.append("...");
-                    }
-                }
-                ImGui::BeginTooltip();
-                ImGui::Text("Title : %s", mapName.c_str());
-                ImGui::Text("By : %s", mapAuthor.c_str());
-                ImGui::Text("Description : \n%s", GoodDescription.c_str());
-                ImGui::EndTooltip();
-            }
-        }
-        ImGui::PopID();
-    }
-    ImGui::EndChild();
+	// PERF: Language strings are now set once in ApplyLanguage() (called from
+	// onLoad and when FR is toggled) instead of reassigning ~40 std::strings every frame.
+
+	if (!HasSeeNewUpdateAlert)
+	{
+		ImGui::OpenPopup("New Update");
+	}
+	renderNewUpdatePopup();
+
+	if (AddedMapSccuessfully)
+	{
+		ImGui::OpenPopup("Add Map Successfull");
+		AddedMapSccuessfully = false;
+	}
+	renderInfoPopup("Add Map Successfull", MapAddedSuccessfullyText.c_str());
+
+
+	if (ImGui::BeginMenuBar())
+	{
+		if (ImGui::BeginMenu(SettingsText.c_str()))
+		{
+			if (ImGui::BeginMenu(ExtractMethodText.c_str()))
+			{
+				if (ImGui::Selectable("Batch File Method"))
+				{
+					unzipMethod = "Bat";
+
+					if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
+					{
+						SaveInCFG();
+					}
+				}
+
+				if (unzipMethod == "Bat")
+				{
+					ImGui::SameLine();
+					ImGui::Text(" : Selected");
+				}
+
+				if (ImGui::Selectable("Powershell Method"))
+				{
+					unzipMethod = "Powershell";
+
+					if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
+					{
+						SaveInCFG();
+					}
+				}
+
+				if (unzipMethod == "Powershell")
+				{
+					ImGui::SameLine();
+					ImGui::Text(" : Selected");
+				}
+
+				ImGui::EndMenu();
+			}
+
+			if (ImGui::BeginMenu(LanguageText.c_str()))
+			{
+				if (ImGui::Selectable("French"))
+				{
+					FR = true;
+					SaveInCFG();
+					ApplyLanguage(); // PERF: update strings immediately on change
+				}
+
+				if (ImGui::Selectable("English"))
+				{
+					FR = false;
+					SaveInCFG();
+					ApplyLanguage(); // PERF: update strings immediately on change
+				}
+				ImGui::EndMenu();
+			}
+
+			if (ImGui::BeginMenu(ControllerText.c_str()))
+			{
+				if (ImGui::Checkbox(UseControllerText.c_str(), &UseController))
+				{
+					SaveInCFG();
+				}
+				
+
+				if (ImGui::BeginMenu(ControllsText.c_str()))
+				{
+					ImGui::Text(ControllsLitText[0].c_str());
+					ImGui::Text(ControllsLitText[1].c_str());
+					ImGui::Text(ControllsLitText[2].c_str());
+					ImGui::Text(ControllsLitText[3].c_str());
+					ImGui::Text(ControllsLitText[4].c_str());
+					ImGui::Text(ControllsLitText[5].c_str());
+					ImGui::EndMenu();
+				}
+
+				if(ImGui::SliderInt(SensitivityText.c_str(), &ControllerSensitivity, 1.f, 30.f))
+				{
+					SaveInCFG();
+				}
+
+				if(ImGui::SliderInt(ScrollSensitivityText.c_str(), &ControllerScrollSensitivity, 1.f, 30.f))
+				{
+					SaveInCFG();
+				}
+
+				ImGui::EndMenu();
+			}
+
+			if (ImGui::Selectable(DlTexturesText.c_str()))
+			{
+				DownloadTexturesBool = true;
+			}
+
+			if (ImGui::Checkbox("Enable Freeze Fix", &EnableAntiFreezeFix))
+			{
+				SaveInCFG();
+			}
+
+			ImGui::EndMenu();
+		}
+
+
+		if (ImGui::BeginMenu(MultiplayerText.c_str()))
+		{
+			if (ImGui::Selectable(OpenCPCCText.c_str()))
+			{
+				std::wstring w_modsDir = s2ws(RLCookedPCConsole_Path.string());
+				LPCWSTR L_modsDir = w_modsDir.c_str();
+
+				ShellExecute(NULL, L"open", L_modsDir, NULL, NULL, SW_SHOWDEFAULT);
+			}
+
+			ImGui::Separator();
+
+			ImGui::Text(JoinCWGText.c_str());
+			renderLink("https://discord.com/invite/KVgmf9JFpZ");
+
+			ImGui::EndMenu();
+		}
+
+		if (DownloadTexturesBool)
+		{
+			ImGui::OpenPopup("DownloadTextures");
+		}
+		// PERF: Use cached texture check instead of 14 filesystem calls per frame.
+		if (missingTexturesCacheDirty) {
+			cachedMissingTextures = CheckExist_TexturesFiles();
+			missingTexturesCacheDirty = false;
+		}
+		renderDownloadTexturesPopup(cachedMissingTextures);
+
+
+		if (ImGui::Selectable(LastUpdateText.c_str(), false, 0, ImGui::CalcTextSize(LastUpdateText.c_str())))
+		{
+			HasSeeNewUpdateAlert = false;
+		}
+
+		if (ImGui::BeginMenu("Support Me"))
+		{
+			ImGui::Text("Support me on Patreon :");
+			renderLink("https://www.patreon.com/WorkshopMapLoader");
+
+			ImGui::EndMenu();
+		}
+
+		if (ImGui::BeginMenu("Credits"))
+		{
+			ImGui::Text("Plugin made by Vync#3866, contact me on discord or twitter for custom plugin commissions.");
+			renderLink("https://twitter.com/Vync5");
+			renderLink("https://www.youtube.com/@vync8978");
+			ImGui::NewLine();
+			ImGui::Text("Thanks to PatteAuSucre for testing and Teyq for his help ;)");
+			ImGui::Text("Thanks to JetFox for his contribution on the plugin");
+
+			ImGui::EndMenu();
+		}
+		ImGui::EndMenuBar();
+	}
+
+
+	if (ImGui::BeginTabBar("TabBar"))
+	{
+		if (ImGui::BeginTabItem(Tab1MapLoaderText.c_str()))
+		{
+			ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 5.f);
+
+			CenterNexIMGUItItem(ImGui::CalcTextSize(Label1Text.c_str()).x);
+			ImGui::Text(Label1Text.c_str());
+
+			CenterNexIMGUItItem(628.f);
+			ImGui::SetNextItemWidth(628.f);
+			ImGui::InputText("##workshopurl123", MapsFolderPathBuf, IM_ARRAYSIZE(MapsFolderPathBuf));
+			// PERF: Only recheck path validity when the text field actually changes,
+			// not every frame. fs::exists is expensive under Wine/Proton.
+			if (ImGui::IsItemDeactivatedAfterEdit() || strcmp(MapsFolderPathBuf, cachedPathForValidation) != 0)
+			{
+				cachedPathIsValid = Directory_Or_File_Exists(fs::path(MapsFolderPathBuf));
+				strncpy(cachedPathForValidation, MapsFolderPathBuf, sizeof(cachedPathForValidation));
+			}
+			ImGui::SameLine();
+			if (!cachedPathIsValid)
+			{
+				ImGui::TextColored(ImVec4(255, 0, 0, 1), DirNotExistText.c_str());
+			}
+			else
+			{
+				ImGui::Text("");
+			}
+
+			CenterNexIMGUItItem(628.f);
+
+			if (ImGui::Button(SelectMapsFolderText.c_str(), ImVec2(151.f, 32.f)))
+			{
+				ImGui::OpenPopup("Select maps folder");
+			}
+			renderFileExplorer();
+
+			ImGui::SameLine();
+
+			if (ImGui::Button(SavePathText.c_str(), ImVec2(151.f, 32.f)))
+			{
+				if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
+				{
+					SaveInCFG();
+
+					ImGui::OpenPopup("SavePath");
+				}
+			}
+			renderInfoPopup("SavePath", PathSavedText.c_str());
+
+
+			ImGui::SameLine();
+
+			if (ImGui::Button(AddMapText.c_str(), ImVec2(151.f, 32.f)))
+			{
+				ImGui::OpenPopup(AddMapText.c_str());
+			}
+			renderAddMapManuallyPopup();
+
+			ImGui::SameLine();
+
+			if (ImGui::Button(RefreshMapsButtonText.c_str(), ImVec2(151.f, 32.f)))
+			{
+				if (!Directory_Or_File_Exists(fs::path(MapsFolderPathBuf)))
+				{
+					ImGui::OpenPopup("Exists?");
+				}
+				else
+				{
+					RefreshMapsFunct(MapsFolderPathBuf);
+					// PERF: Refresh texture cache after explicit refresh
+					missingTexturesCacheDirty = true;
+					if (cachedMissingTextures.size() > 0 && dontAsk == 0)
+					{
+						ImGui::OpenPopup("DownloadTextures");
+					}
+				}
+			}
+			renderInfoPopup("Exists?", DirNotExistText.c_str());
+
+			renderDownloadTexturesPopup(cachedMissingTextures);
+
+			ImGui::SameLine();
+
+			ImGui::BeginGroup();
+			{
+				AlignRightNexIMGUItItem(95.f, 8.f);
+				ImVec2 cursorPos = ImGui::GetCursorPos();
+				if (MapsDisplayMode == 1)
+				{
+					ImGui::SetCursorPos(ImVec2(cursorPos.x + 14.f, cursorPos.y - 48.f));
+					ImGui::BeginGroup();
+					{
+						ImGui::Text(MapsPerLineText.c_str());
+						ImGui::SetNextItemWidth(80.f);
+						if (ImGui::BeginCombo("##mapsinline", std::to_string(nbTilesPerLine).c_str()))
+						{
+							for (int i = 2; i <= 14; i++)
+							{
+								if (ImGui::Selectable(std::to_string(i).c_str()))
+								{
+									nbTilesPerLine = i;
+									SaveInCFG();
+								}
+							}
+							ImGui::EndCombo();
+						}
+
+						ImGui::EndGroup();
+					}
+				}
+				ImGui::SetCursorPos(ImVec2(cursorPos.x + 14.f, cursorPos.y - 4.f));
+				ImGui::BeginGroup();
+				{
+					ImTextureID TextureID_DisplayMode1Image = MapsDisplayMode_Logo1_Image->GetImGuiTex();
+					if (MapsDisplayMode == 0)
+					{
+						TextureID_DisplayMode1Image = MapsDisplayMode_Logo1_SelectedImage->GetImGuiTex();
+					}
+					renderImageButton(TextureID_DisplayMode1Image, ImVec2(36.f, 36.f), [this]() {
+						MapsDisplayMode = 0;
+						cvarManager->log("MapsDisplayMode set to : 0");
+						SaveInCFG();
+						});
+
+					ImGui::SameLine();
+
+					ImTextureID TextureID_DisplayMode2Image = MapsDisplayMode_Logo2_Image->GetImGuiTex();
+					if (MapsDisplayMode == 1)
+					{
+						TextureID_DisplayMode2Image = MapsDisplayMode_Logo2_SelectedImage->GetImGuiTex();
+					}
+					renderImageButton(TextureID_DisplayMode2Image, ImVec2(36.f, 36.f), [this]() {
+						MapsDisplayMode = 1;
+						cvarManager->log("MapsDisplayMode set to : 1");
+						SaveInCFG();
+						});
+
+					ImGui::EndGroup();
+				}
+				ImGui::EndGroup();
+			}
+
+			if (IsDownloading_WorkshopTextures)
+			{
+				ImGui::Separator();
+
+				std::string ProgressBar_Label = convertToMB(std::to_string(DownloadTextrures_ProgressDisplayed)) + " / " + convertToMB(std::to_string(46970000));
+				renderProgressBar(DownloadTextrures_ProgressDisplayed, 46970000.f, ImGui::GetCursorScreenPos(), ImVec2(1305.f, 24.f),
+					ImColor(112, 112, 112, 255), ImColor(33, 65, 103, 255), ProgressBar_Label.c_str());
+
+				ImGui::Separator();
+			}
+
+			renderQuickSearch();
+
+			renderMaps(controller1);
+
+			ImGui::EndTabItem();
+		}
+
+
+		if (ImGui::BeginTabItem(Tab3SearchWorkshopText.c_str()))
+		{
+			static char keyWord[200] = "";
+			ImGui::BeginGroup();
+			{
+				ImGui::Text(Label3Text.c_str());
+
+				ImGui::SetNextItemWidth(308.f);
+				ImGui::InputText("##RLMAPSworkshopkeyword", keyWord, IM_ARRAYSIZE(keyWord));
+
+
+				if (RLMAPS_Searching)
+				{
+					SearchButtonText = SearchingText;
+				}
+
+				if (ImGui::Button(SearchButtonText.c_str(), ImVec2(308.f, 25.f)) && !RLMAPS_Searching && std::string(keyWord) != "")
+				{
+					std::thread t2(&Pluginx64::GetResults, this, std::string(keyWord), 1);
+					t2.detach();
+				}
+				ImGui::EndGroup();
+			}
+
+			ImGui::SameLine();
+
+			try
+			{
+				CenterNexIMGUItItem(63.f);
+				ImGui::Image(RLMAPSLogoImage->GetImGuiTex(), ImVec2(63.f, 63.f));
+			}
+			catch (const std::exception& ex)
+			{
+				cvarManager->log(ex.what());
+			}
+
+			ImGui::SameLine();
+
+			AlignRightNexIMGUItItem(180.f, 8.f);
+			if (ImGui::Button(BrowseMapsText.c_str(), ImVec2(180.f, 65.f)) && !RLMAPS_Searching)
+			{
+				strncpy(keyWord, "", IM_ARRAYSIZE(""));
+				std::thread t2(&Pluginx64::GetResults, this, "", 1);
+				t2.detach();
+			}
+
+			if (FolderErrorBool)
+			{
+				ImGui::OpenPopup("FolderError");
+			}
+			renderFolderErrorPopup();
+
+			if (DownloadFailed)
+			{
+				ImGui::OpenPopup("DownloadFailed");
+			}
+			renderDownloadFailedPopup();
+
+			if (UserIsChoosingYESorNO)
+			{
+				ImGui::OpenPopup("Download?");
+			}
+			renderAcceptDownload();
+
+
+			if (RLMAPS_IsDownloadingWorkshop == true)
+			{
+				ImGui::Separator();
+
+				std::string ProgressBar_Label = convertToMB(std::to_string(RLMAPS_WorkshopDownload_Progress)) + " / " + convertToMB(std::to_string(RLMAPS_WorkshopDownload_FileSize));
+				renderProgressBar(RLMAPS_WorkshopDownload_Progress, RLMAPS_WorkshopDownload_FileSize, ImGui::GetCursorScreenPos(), ImVec2(1305.f, 24.f),
+					ImColor(112, 112, 112, 255), ImColor(33, 65, 103, 255), ProgressBar_Label.c_str());
+			}
+
+			ImGui::Separator();
+
+			ImGui::BeginChild("##RLMAPSSearchWorkshopMapsResults");
+			{
+				ImGui::Text("%s %d / %d", WorkshopsFoundText.c_str(), RLMAPS_SearchWorkshopDisplayed, RLMAPS_NumberOfMapsFound);
+
+				ImGui::SameLine();
+
+
+				if (RLMAPS_PageSelected > 1)
+				{
+					if (ImGui::Button("Previous Page", ImVec2(100.f, 25.f)) && !RLMAPS_Searching)
+					{
+						std::thread t2(&Pluginx64::GetResults, this, std::string(keyWord), RLMAPS_PageSelected - 1);
+						t2.detach();
+					}
+				}
+
+				ImGui::SameLine();
+
+				for (int i = RLMAPS_PageSelected - 4; i <= RLMAPS_PageSelected + 4; i++)
+				{
+					if (i <= NumPages && i > 0)
+					{
+						std::string pageName = "Page " + std::to_string(i);
+						if (RLMAPS_PageSelected != i)
+						{
+							if (ImGui::Button(pageName.c_str(), ImVec2(55.f, 25.f)) && !RLMAPS_Searching)
+							{
+								std::thread t2(&Pluginx64::GetResults, this, std::string(keyWord), i);
+								t2.detach();
+							}
+							ImGui::SameLine();
+						}
+						else
+						{
+							ImGui::Text("Current page : %d", RLMAPS_PageSelected);
+							ImGui::SameLine();
+						}
+					}
+					
+				}
+
+				if (RLMAPS_PageSelected < NumPages - 1)
+				{
+					if (ImGui::Button("Next Page", ImVec2(100.f, 25.f)) && !RLMAPS_Searching)
+					{
+						std::thread t2(&Pluginx64::GetResults, this, std::string(keyWord), RLMAPS_PageSelected + 1);
+						t2.detach();
+					}
+				}
+
+				ImGui::NewLine();
+				ImGui::NewLine();
+				RLMAPS_renderSearchWorkshopResults(MapsFolderPathBuf);
+
+				ImGui::EndChild();
+			}
+			ImGui::EndTabItem();
+		}
+		ImGui::EndTabBar();
+	}
+
+	ImGui::End();
+
+	if (!isWindowOpen_)
+	{
+		cvarManager->executeCommand("togglemenu " + GetMenuName());
+	}
 }
 
 
@@ -944,21 +1257,9 @@ void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char ma
 			drawList->AddRectFilled(TopCornerLeft, RectFilled_p_max, ImColor(44, 75, 113, 255), 5.f, 15);
 			drawList->AddRect(ImageP_Min, ImageP_Max, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
 
-			if (mapResult.isImageLoaded == true)
+			if (mapResult.isImageLoaded == true && mapResult.Image != nullptr)
 			{
-				try
-				{
-					if (mapResult.Image != nullptr)
-					{
-						if (mapResult.Image->GetImGuiTex())
-						{
-							drawList->AddImage(mapResult.Image->GetImGuiTex(), ImageP_Min, ImageP_Max);
-						}
-					}
-				}
-				catch (const std::exception& ex)
-				{
-				}
+				drawList->AddImage((ImTextureID)mapResult.Image, ImageP_Min, ImageP_Max);
 			}
 
 			std::string GoodMapName = mapName;
