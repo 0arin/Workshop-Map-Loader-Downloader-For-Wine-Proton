@@ -24,15 +24,18 @@ void Pluginx64::Render()
 	// Upload any pending preview textures on the render thread.
 	// Background threads store raw image bytes in RawImageBytes; we decode and
 	// upload here where the D3D11 device context is guaranteed to be current.
-	for (auto& result : RLMAPS_MapResultList)
 	{
-		if (result.Image == nullptr && !result.RawImageBytes.empty())
+		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+		for (auto& result : RLMAPS_MapResultList)
 		{
-			result.Image = LoadTextureFromMemory(result.RawImageBytes);
-			result.RawImageBytes.clear();
-			result.RawImageBytes.shrink_to_fit();
-			if (result.Image != nullptr)
-				result.isImageLoaded = true;
+			if (result.Image == nullptr && !result.RawImageBytes.empty())
+			{
+				result.Image = LoadTextureFromMemory(result.RawImageBytes);
+				result.RawImageBytes.clear();
+				result.RawImageBytes.shrink_to_fit();
+				if (result.Image != nullptr)
+					result.isImageLoaded = true;
+			}
 		}
 	}
 
@@ -1212,7 +1215,16 @@ void Pluginx64::RLMAPS_renderSearchWorkshopResults(static char mapspath[200])
 		nbResultPerLine = 6;
 	}
 
-	for (int i = 0; i < RLMAPS_MapResultList.size(); i++)
+	// Snapshot the size so concurrent push_backs from bg threads don't affect iteration.
+	// reserve() in GetResults ensures no reallocation happens, so .at(i) on elements
+	// 0..resultCount-1 is safe to call without the lock during the draw loop.
+	int resultCount;
+	{
+		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+		resultCount = (int)RLMAPS_MapResultList.size();
+	}
+
+	for (int i = 0; i < resultCount; i++)
 	{
 		if (LinesNb < nbResultPerLine)
 		{
