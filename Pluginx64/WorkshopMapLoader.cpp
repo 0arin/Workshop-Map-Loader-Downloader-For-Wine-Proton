@@ -20,7 +20,9 @@ std::string GameSetting::GetSelectedValue()
 
 void Pluginx64::onLoad()
 {
-	gameWrapper->RegisterDrawable(std::bind(&Pluginx64::checkOpenMenuWithController, this, std::placeholders::_1));
+	// REMOVED: gameWrapper->RegisterDrawable(...)
+	// Controller open/close check now runs inside Render() via PluginWindow,
+	// which is the correct path and does not block the game render thread.
 
 	BakkesmodPath = gameWrapper->GetBakkesModPath().string() + "\\";
 	IfNoPreviewImagePath = BakkesmodPath + "data\\WorkshopMapLoader\\Search\\NoPreview.jpg";
@@ -152,9 +154,6 @@ void Pluginx64::checkOpenMenuWithController(CanvasWrapper canvas)
 }
 
 
-
-
-
 //Local Maps
 
 std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePath)
@@ -190,8 +189,6 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 	Infos.push_back(MapTitle);
 	Infos.push_back(MapDescription);
 	Infos.push_back(MapAuthor);
-
-	//{\"Title\":\"" + Title + "\",\"Author\":\"" + Author + "\",\"Description\":\"" + Description + "\",\"PreviewUrl\":\"" + PreviewUrl + "\"}
 
 	return Infos;
 }
@@ -244,11 +241,9 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 				std::string fileExtension = file.path().filename().extension().string();
 				nbFiles++;
 
-
-
 				if (!hasFoundJSON && fileExtension == ".json")
 				{
-					if (file.path().filename().string().substr(0, file.path().filename().string().length() - 5) == CurrentMapDirectory.filename().string())//if JSON file name == the map folder's name
+					if (file.path().filename().string().substr(0, file.path().filename().string().length() - 5) == CurrentMapDirectory.filename().string())
 					{
 						map.JsonFile = file.path().string();
 						hasFoundJSON = true;
@@ -258,7 +253,6 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 						map.mapDescription = MapInfosList.at(1);
 						map.mapAuthor = MapInfosList.at(2);
 
-						//cvarManager->log("Folder name  : " + CurrentMapDirectory.filename().string());
 						cvarManager->log("JSON name  : " + file.path().filename().string());
 					}
 				}
@@ -282,7 +276,7 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 				{
 					if (nbFiles == nbFilesInDirectory && hasFoundPreview == false)
 					{
-						map.PreviewImage = std::make_shared<ImageWrapper>(IfNoPreviewImagePath, false, true); //if there is no preview image, it will load a red cross image
+						map.PreviewImage = std::make_shared<ImageWrapper>(IfNoPreviewImagePath, false, true);
 						map.isPreviewImageLoaded = true;
 						cvarManager->log("No preview found in this folder");
 					}
@@ -319,13 +313,13 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 				}
 			}
 		}
-		else       //if the folder is empty
+		else
 		{
 			cvarManager->log("Empty folder !");
 			map.UpkFile = "EmptyFolder";
 			map.ZipFile = "EmptyFolder";
 			map.JsonFile = "EmptyFolder";
-			map.PreviewImage = std::make_shared<ImageWrapper>(IfNoPreviewImagePath, false, true); //if there is no preview image, it will load a red cross image
+			map.PreviewImage = std::make_shared<ImageWrapper>(IfNoPreviewImagePath, false, true);
 			map.isPreviewImageLoaded = true;
 		}
 
@@ -341,7 +335,7 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::string mapDescription, std::filesystem::path mapsDirectoryPath, std::filesystem::path mapFilePath, std::filesystem::path imagePath)
 {
 	std::string Workshop_Dl_Path = "";
-	std::string workshopSafeMapName = replace(mapName, *" ", *"_"); //replace spaces by underscores
+	std::string workshopSafeMapName = replace(mapName, *" ", *"_");
 	std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "-", "#" };
 	for (auto special : specials)
 	{
@@ -352,19 +346,18 @@ void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::
 	{
 		Workshop_Dl_Path = mapsDirectoryPath.string() + workshopSafeMapName;
 	}
-	else  //if last character != /
+	else
 	{
 		Workshop_Dl_Path = mapsDirectoryPath.string() + "/" + workshopSafeMapName;
-		//cvarManager->log("A slash has been added a the end of the path");
 	}
 
 
 	try
 	{
-		fs::create_directory(Workshop_Dl_Path); //create directory for the map downloaded
+		fs::create_directory(Workshop_Dl_Path);
 		cvarManager->log("Directory Created : " + Workshop_Dl_Path);
 	}
-	catch (const std::exception& ex) //manage errors when trying to create a folder in an administrator folder
+	catch (const std::exception& ex)
 	{
 		cvarManager->log(ex.what());
 		FolderErrorText = ex.what();
@@ -375,7 +368,7 @@ void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::
 
 	if (Directory_Or_File_Exists(mapFilePath))
 	{
-		fs::copy(mapFilePath, Workshop_Dl_Path + "/" + mapFilePath.filename().string()); //copy map file to map directory
+		fs::copy(mapFilePath, Workshop_Dl_Path + "/" + mapFilePath.filename().string());
 		cvarManager->log("Map pasted : " + Workshop_Dl_Path + "/" + mapFilePath.filename().string());
 	}
 	else
@@ -389,7 +382,7 @@ void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::
 
 	if (Directory_Or_File_Exists(imagePath))
 	{
-		fs::copy(imagePath, Workshop_Dl_Path + "/" + imagePath.filename().string()); //copy preview to map directory
+		fs::copy(imagePath, Workshop_Dl_Path + "/" + imagePath.filename().string());
 		cvarManager->log("Preview pasted : " + Workshop_Dl_Path + "/" + imagePath.filename().string());
 	}
 	else
@@ -402,16 +395,12 @@ void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::
 }
 
 
-
-
-
 //Download Utils
 
 void Pluginx64::CreateJSONLocalWorkshopInfos(std::string jsonFileName, std::string workshopMapPath, std::string mapTitle, std::string mapAuthor, std::string mapDescription,
 	std::string mapPreviewUrl)
 {
 	std::string filename = workshopMapPath + jsonFileName + ".json";
-	//cvarManager->log(filename);
 	std::ofstream JSONFile(filename);
 
 	std::string Title = mapTitle;
@@ -428,16 +417,12 @@ void Pluginx64::CreateUnzipBatchFile(std::string destinationPath, std::string zi
 	std::string filename = BakkesmodPath + "data\\WorkshopMapLoader\\temp\\unzip.bat";
 	std::ofstream BatFile(filename);
 
-	std::string Destination_Path = destinationPath; //where it unzip (just the folder)
-	std::string ZIPFile_Path = zipFilePath; //where the .zip is (complete path + .zip)
+	std::string Destination_Path = destinationPath;
+	std::string ZIPFile_Path = zipFilePath;
 
-	//just replace the slashes by backslashes for both pathes
 	std::string Correct_File_Path = replace(Destination_Path, *"/", *"\\");
 	std::string Correct_ZIPFile_Path = replace(ZIPFile_Path, *"/", *"\\");
 
-
-	// Comment added by Martinn
-	// https://stackoverflow.com/questions/21704041/creating-batch-script-to-unzip-a-file-without-additional-zip-tools
 	BatFile << "@echo off\n";
 	BatFile << "setlocal\n";
 	BatFile << "cd /d %~dp0\n";
@@ -495,10 +480,8 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 
 	for (int index = 0; index < maps.size(); ++index)
 	{
-		//GetMapResult(maps, index);
 		std::thread t2(&Pluginx64::GetMapResult, this, maps, index);
 		t2.detach();
-
 
 		Sleep(100);
 	}
@@ -520,7 +503,6 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	result.Description = maps[index]["description"].asString();
 
 	cpr::Response Request_MapDownloadLinks = cpr::Get(cpr::Url{ "https://celab.jetfox.ovh/api/v4/projects/" + result.ID + "/releases" });
-	//Parse response json
 	Json::Value actualJson2;
 	Json::Reader reader2;
 	reader2.parse(Request_MapDownloadLinks.text, actualJson2);
@@ -539,14 +521,13 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 
 		std::string zipNameUnsafe = maps2[release_index]["assets"]["links"][1]["name"].asString();
 
-		// todo better to do a whitelist
 		std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "#", "'", "`"};
 		for (auto special : specials)
 		{
 			eraseAll(zipNameUnsafe, special);
 		}
 
-		release.zipName = zipNameUnsafe; // now it is filtered
+		release.zipName = zipNameUnsafe;
 
 		releases.push_back(release);
 	}
@@ -556,21 +537,12 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	result.Author = maps[index]["namespace"]["path"].asString();
 	result.PreviewUrl = releases[0].pictureLink;
 
-	//cvarManager->log("download url : " + releases[0].downloadLink);
-	//GetMapSize(releases[0].downloadLink);
-
-
 	cvarManager->log("Map : " + result.Name);
-
 
 	std::filesystem::path resultImagePath = BakkesmodPath + "data\\WorkshopMapLoader\\Search\\img\\RLMAPS\\" + result.ID + ".jfif";
 
-
-
-	if (!Directory_Or_File_Exists(resultImagePath)) //if preview image doesn't exist
+	if (!Directory_Or_File_Exists(resultImagePath))
 	{
-		//IsDownloadingPreview = true;
-		/*RLMAPS_MapResultList[index].IsDownloadingPreview = true;*/
 		result.IsDownloadingPreview = true;
 
 		RLMAPS_MapResultList.push_back(result);
@@ -588,11 +560,8 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 		result.Image = resultImage;
 		result.isImageLoaded = resultisImageLoaded;
 
-
 		RLMAPS_MapResultList.push_back(result);
 	}
-
-
 }
 
 void Pluginx64::GetNumpPages(std::string keyWord)
@@ -604,7 +573,6 @@ void Pluginx64::GetNumpPages(std::string keyWord)
 		NumPages++;
 		cpr::Response Request_Page = cpr::Get(cpr::Url{ rlmaps_url + keyWord + "&page=" + std::to_string(NumPages) });
 
-		//Parse response json
 		Json::Value actualJson;
 		Json::Reader reader;
 
@@ -620,16 +588,11 @@ void Pluginx64::GetMapSize(std::string donwloadUrl)
 {
 	cpr::Response Request_Page = cpr::Head(cpr::Url{ donwloadUrl });
 
-	/*cvarManager->log("HEADERS : " + Request_Page.raw_header);
-	cvarManager->log("Content-Length HEADER LETS GO : " + Request_Page.header.at("Content-Length"));*/
-
 	std::string locationstr = Request_Page.raw_header.substr(Request_Page.raw_header.find("Location: ") + 10, Request_Page.raw_header.find("Vary:") - Request_Page.raw_header.find("Location: ") - 10);
 	cvarManager->log("location found : " + locationstr);
 
-
 	cpr::Response Request_size = cpr::Get(cpr::Url{ locationstr });
 	cvarManager->log("HEADERS : " + Request_size.raw_header);
-
 }
 
 
@@ -641,10 +604,10 @@ std::vector<Map> Pluginx64::QuickSearch_GetMapList(std::string keyWord)
 	{
 		std::string mapName = map.mapName;
 
-		std::transform(mapName.begin(), mapName.end(), mapName.begin(), ::tolower); //transform a string to lowercase
-		std::transform(keyWord.begin(), keyWord.end(), keyWord.begin(), ::tolower); //transform a string to lowercase
+		std::transform(mapName.begin(), mapName.end(), mapName.begin(), ::tolower);
+		std::transform(keyWord.begin(), keyWord.end(), keyWord.begin(), ::tolower);
 
-		if (mapName.find(keyWord) != std::string::npos) //if keyWord is in the mapNameToLower
+		if (mapName.find(keyWord) != std::string::npos)
 		{
 			List.push_back(map);
 		}
@@ -661,17 +624,16 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 
 	while (UserIsChoosingYESorNO)
 	{
-		//while he is choosing
 		Sleep(100);
 	}
 
-	if (!AcceptTheDownload) //if user canceled the download
+	if (!AcceptTheDownload)
 	{
 		return;
 	}
 
 	std::string Workshop_Dl_Path = "";
-	std::string workshopSafeMapName = replace(mapResult.Name, *" ", *"_"); //replace spaces by underscores
+	std::string workshopSafeMapName = replace(mapResult.Name, *" ", *"_");
 	std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "-", "#" };
 	for (auto special : specials)
 	{
@@ -683,19 +645,18 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 	{
 		Workshop_Dl_Path = folderpath + workshopSafeMapName;
 	}
-	else  //if last character != /
+	else
 	{
 		Workshop_Dl_Path = folderpath + "/" + workshopSafeMapName;
-		//cvarManager->log("A slash has been added a the end of the path");
 	}
 
 
 	try
 	{
-		fs::create_directory(Workshop_Dl_Path); //create directory for the map downloaded
+		fs::create_directory(Workshop_Dl_Path);
 		cvarManager->log("Directory Created : " + Workshop_Dl_Path);
 	}
-	catch (const std::exception& ex) //manage errors when trying to create a folder in an administrator folder
+	catch (const std::exception& ex)
 	{
 		cvarManager->log(ex.what());
 		FolderErrorText = ex.what();
@@ -709,7 +670,7 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 
 	if (Directory_Or_File_Exists(mapResult.ImagePath))
 	{
-		fs::copy(mapResult.ImagePath, Workshop_Dl_Path + "/" + workshopSafeMapName + ".jfif"); //copy preview to map directory
+		fs::copy(mapResult.ImagePath, Workshop_Dl_Path + "/" + workshopSafeMapName + ".jfif");
 		cvarManager->log("Preview pasted : " + Workshop_Dl_Path + "/" + workshopSafeMapName + ".jfif");
 	}
 	else
@@ -728,17 +689,13 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 
 	cvarManager->log("Download Starting...");
 
-	//download
 	CurlRequest req;
 	req.url = download_url;
 	req.progress_function = [this](double file_size, double downloaded, ...)
 	{
-		//cvarManager->log("Download progress : " + std::to_string(downloaded));
 		RLMAPS_Download_Progress = downloaded;
 		RLMAPS_WorkshopDownload_FileSize = file_size;
 	};
-
-	
 
 	HttpWrapper::SendCurlRequest(req, [this, Folder_Path, Workshop_Dl_Path](int code, char* data, size_t size)
 		{
@@ -771,7 +728,7 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 	}
 
 
-	int checkTime = 0; //this isn't good but I don't care
+	int checkTime = 0;
 	while(UdkInDirectory(Workshop_Dl_Path) == "Null")
 	{
 		cvarManager->log("Extracting zip file");
@@ -798,18 +755,16 @@ void Pluginx64::DownloadWorkshopTextures()
 {
 	std::string ZipFilePath = BakkesmodPath + "data\\WorkshopMapLoader\\Textures.zip";
 	
-	if (!Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\Textures.zip")) //le if peut causer des problemes
+	if (!Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\Textures.zip"))
 	{
 		IsDownloading_WorkshopTextures = true;
 
 		cvarManager->log("Starting download : Workshop Textures");
 
-		//download
 		CurlRequest req;
 		req.url = "https://cdn.discordapp.com/attachments/1062156148054179850/1062156149257932821/Workshop-textures.zip";
 		req.progress_function = [this](double file_size, double downloaded, ...)
 		{
-			//cvarManager->log("Download progress : " + std::to_string(downloaded));
 			Download_Textrures_Progress = downloaded;
 		};
 
@@ -882,10 +837,8 @@ std::string Pluginx64::replace(std::string s, char c1, char c2)
 {
 	int l = s.length();
 
-	// loop to traverse in the string 
 	for (int i = 0; i < l; i++)
 	{
-		// check for c1 and replace 
 		if (s[i] == c1)
 			s[i] = c2;
 	}
@@ -894,30 +847,30 @@ std::string Pluginx64::replace(std::string s, char c1, char c2)
 
 std::string Pluginx64::convertToMB(std::string numberToConvert)
 {
-	if (numberToConvert.length() > 9 && numberToConvert.length() < 13) //If it's GigaBytes
+	if (numberToConvert.length() > 9 && numberToConvert.length() < 13)
 	{
-		std::string result = numberToConvert.insert(numberToConvert.length() - 6, ","); //insert a ","
-		result = numberToConvert.erase(numberToConvert.length() - 6) + " GB"; //remove the last 4 numbers
+		std::string result = numberToConvert.insert(numberToConvert.length() - 6, ",");
+		result = numberToConvert.erase(numberToConvert.length() - 6) + " GB";
 		return result;
 	}
 
-	if (numberToConvert.length() > 6 && numberToConvert.length() < 10) //If it's MegaBytes
+	if (numberToConvert.length() > 6 && numberToConvert.length() < 10)
 	{
-		std::string result = numberToConvert.insert(numberToConvert.length() - 6, ","); //insert a ","
-		result = numberToConvert.erase(numberToConvert.length() - 4) + " MB"; //remove the last 4 numbers
+		std::string result = numberToConvert.insert(numberToConvert.length() - 6, ",");
+		result = numberToConvert.erase(numberToConvert.length() - 4) + " MB";
 		return result;
 	}
 
-	if (numberToConvert.length() > 3 && numberToConvert.length() < 7) //If it's KiloBytes
+	if (numberToConvert.length() > 3 && numberToConvert.length() < 7)
 	{
-		std::string result = numberToConvert.insert(numberToConvert.length() - 3, ","); //insert a ","
-		result = numberToConvert.erase(numberToConvert.length() - 2) + " kB"; //remove the last 2 numbers
+		std::string result = numberToConvert.insert(numberToConvert.length() - 3, ",");
+		result = numberToConvert.erase(numberToConvert.length() - 2) + " kB";
 		return result;
 	}
 
-	if (numberToConvert.length() > 0 && numberToConvert.length() < 4) //If it's Bytes
+	if (numberToConvert.length() > 0 && numberToConvert.length() < 4)
 	{
-		std::string result = numberToConvert + " Bytes"; //insert a ","
+		std::string result = numberToConvert + " Bytes";
 		return result;
 	}
 }
@@ -956,9 +909,7 @@ std::vector<std::string> Pluginx64::FindAllSubstringInAString(std::string texte,
 		s.erase(0, IndexPos.at(i));
 
 		std::string resultString = s.substr(beginString.length(), s.find(endString) - beginString.length());
-		//std::cout << "Resultat : " + resultString << std::endl;
 		List.push_back(resultString);
-		//std::cout << std::endl;
 	}
 	return List;
 }
@@ -969,7 +920,6 @@ std::string Pluginx64::UdkInDirectory(std::string dirPath)
 	{
 		if (file.path().extension().string() == ".udk" || file.path().extension().string() == ".upk")
 		{
-			//cvarManager->log(file.path().string());
 			return file.path().string();
 		}
 	}
@@ -989,18 +939,11 @@ void Pluginx64::renameFileToUPK(std::filesystem::path filePath)
 
 	std::string UDKPath = UdkInDirectory(filePath.string());
 	if (UDKPath == "Null") { return; }
-	//cvarManager->log("upk file : " + UPKPath);
 
-
-	//This is to fix the crashing issues when loading maps
-	//What it does ? it only renames the map, that's what fixes the crashing issue actually, wtf Psyonix?????
 	if (UDKPath.find("_antifreeze") != std::string::npos)
 	{
 		std::string oldUDKPath = UDKPath;
 		eraseAll(UDKPath, "_antifreeze");
-
-		/*cvarManager->log("oldUDKPath : " + oldUDKPath);
-		cvarManager->log("UDKPath : " + UDKPath);*/
 
 		if (rename(oldUDKPath.c_str(), UDKPath.c_str()) != 0)
 			cvarManager->log("Error renaming file");
@@ -1010,9 +953,6 @@ void Pluginx64::renameFileToUPK(std::filesystem::path filePath)
 	else
 	{
 		std::string UPKPath_antifreeze = UDKPath.substr(0, UDKPath.length() - 4) + "_antifreeze.upk";
-
-		/*cvarManager->log("UPKPath_antifreeze : " + UPKPath_antifreeze);
-		cvarManager->log("UDKPath : " + UDKPath);*/
 
 		if (rename(UDKPath.c_str(), UPKPath_antifreeze.c_str()) != 0)
 			cvarManager->log("Error renaming file for antifreeze");
@@ -1068,10 +1008,8 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 {
 	std::string download_url = downloadUrl;
 	std::string File_Path = filePath;
-	//converting download_url string to LPCWSTR
 	std::wstring w_URL = s2ws(download_url);
 	LPCWSTR L_URL = w_URL.c_str();
-	//converting Folder_Path string to LPCWSTR
 	std::wstring w_PATH = s2ws(File_Path);
 	LPCWSTR L_PATH = w_PATH.c_str();
 
@@ -1125,23 +1063,17 @@ float Pluginx64::DoRatio(float x, float y)
 	return result;
 }
 
-//https://www.geeksforgeeks.org/html-parser-in-c-cpp/
 void Pluginx64::CleanHTML(std::string& S)
 {
 	if (S == "")
 		return;
-	// Store the length of the
-	// input string
 	int n = S.length();
 	int start = 0, end = 0;
 
 	while (end != n - 1)
 	{
 		n = S.length();
-		// Traverse the string
 		for (int i = 0; i < n; i++) {
-			// If S[i] is '>', update
-			// start to i+1 and break
 			if (S[i] == '<') {
 				start = i;
 				break;
@@ -1152,15 +1084,11 @@ void Pluginx64::CleanHTML(std::string& S)
 			}
 		}
 
-		// Remove the blank space
 		while (S[start] == ' ') {
 			start++;
 		}
 
-		// Traverse the string
 		for (int i = start; i < n; i++) {
-			// If S[i] is '<', update
-			// end to i-1 and break
 			if (S[i] == '>') {
 				end = i;
 				break;
@@ -1168,13 +1096,10 @@ void Pluginx64::CleanHTML(std::string& S)
 		}
 
 		std::string result;
-		// Print the characters in the
-		// range [start, end]
 		for (int j = start; j <= end; j++) {
 			result += S[j];
 		}
 
-		//cvarManager->log("parser result : " + result);
 		if (result == "<br>")
 		{
 			S.replace(start, (end + 1) - start, "\n");
@@ -1188,14 +1113,13 @@ void Pluginx64::CleanHTML(std::string& S)
 
 }
 
-//https://stackoverflow.com/questions/3418231/replace-part-of-a-string-with-another-string
 void Pluginx64::replaceAll(std::string& str, const std::string& from, const std::string& to) {
 	if (from.empty())
 		return;
 	size_t start_pos = 0;
 	while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
 		str.replace(start_pos, from.length(), to);
-		start_pos += to.length(); // In case 'to' contains 'from', like replacing 'x' with 'yx'
+		start_pos += to.length();
 	}
 }
 
@@ -1222,8 +1146,6 @@ std::vector<std::string> Pluginx64::GetDrives()
 	}
 
 	printf("Drives available:\n");
-	//extract the drives from the mask using 
-	//logical and-ing with & and bitshift operator <<
 	while (iCounter < 24) {
 		if (dwDrivesMask & (1 << iCounter)) {
 			printf("%c:\\ \n", iASCIILetter + iCounter);
@@ -1235,9 +1157,6 @@ std::vector<std::string> Pluginx64::GetDrives()
 	}
 	return Drives;
 }
-
-
-
 
 
 void Pluginx64::onUnload() {}
