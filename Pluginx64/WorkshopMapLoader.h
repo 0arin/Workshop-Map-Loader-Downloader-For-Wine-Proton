@@ -166,6 +166,7 @@ public:
 	//Search Workshop
 	//rocketleaguemaps.us
 	std::vector<RLMAPS_MapResult> RLMAPS_MapResultList;
+	std::mutex RLMAPS_ListMutex; // guards all access to RLMAPS_MapResultList from bg threads
 	int RLMAPS_PageSelected = 0;
 	void GetResults(std::string keyWord, int IndexPage);
 	void GetMapResult(Json::Value maps, int index);
