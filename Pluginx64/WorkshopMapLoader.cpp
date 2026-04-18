@@ -13,61 +13,76 @@ namespace
 
 
 // ---------------------------------------------------------------------------
-// LoadTextureFromMemory — decode image bytes in-memory via WIC, upload to GPU.
-// Must be called from the render/game thread (D3D11 device context requirement).
-// Returns nullptr on any failure.
+// LoadTextureFromMemory — decode JPEG/PNG/BMP bytes via GDI+ and upload to D3D11.
+// GDI+ is used instead of WIC because Wine's GDI+ support is rock-solid
+// (used by .NET and virtually every Windows app), while WIC COM registration
+// is unreliable under Wine/Proton.
+// Must be called from the render thread.
 // ---------------------------------------------------------------------------
 ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
 {
 	if (data.empty()) return nullptr;
 
-	// WIC requires COM to be initialised on the calling thread.
-	// CoInitializeEx is a no-op if already initialised, so this is safe.
-	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+	// Initialise GDI+ once. Using a simple token + flag is safe here because
+	// this function is only ever called from the single render thread.
+	static ULONG_PTR gdiplusToken = 0;
+	static bool gdiplusInitialised = false;
+	if (!gdiplusInitialised)
+	{
+		Gdiplus::GdiplusStartupInput startupInput;
+		Gdiplus::GdiplusStartup(&gdiplusToken, &startupInput, nullptr);
+		gdiplusInitialised = true;
+	}
 
-	IWICImagingFactory* wicFactory = nullptr;
-	HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
-		CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory));
-	if (FAILED(hr) || !wicFactory) return nullptr;
+	// Wrap the raw bytes in a COM IStream so GDI+ can read them without a temp file.
+	IStream* stream = SHCreateMemStream(data.data(), static_cast<UINT>(data.size()));
+	if (!stream) return nullptr;
 
-	IWICStream* wicStream = nullptr;
-	hr = wicFactory->CreateStream(&wicStream);
-	if (FAILED(hr)) { wicFactory->Release(); return nullptr; }
+	Gdiplus::Bitmap* bitmap = Gdiplus::Bitmap::FromStream(stream);
+	stream->Release();
 
-	hr = wicStream->InitializeFromMemory(
-		const_cast<BYTE*>(data.data()),
-		static_cast<DWORD>(data.size()));
-	if (FAILED(hr)) { wicStream->Release(); wicFactory->Release(); return nullptr; }
+	if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok)
+	{
+		delete bitmap;
+		return nullptr;
+	}
 
-	IWICBitmapDecoder* decoder = nullptr;
-	hr = wicFactory->CreateDecoderFromStream(
-		wicStream, nullptr, WICDecodeMetadataCacheOnLoad, &decoder);
-	wicStream->Release();
-	if (FAILED(hr)) { wicFactory->Release(); return nullptr; }
+	// Convert to 32-bit ARGB so we get a consistent pixel layout.
+	UINT width  = bitmap->GetWidth();
+	UINT height = bitmap->GetHeight();
 
-	IWICBitmapFrameDecode* frame = nullptr;
-	hr = decoder->GetFrame(0, &frame);
-	decoder->Release();
-	if (FAILED(hr)) { wicFactory->Release(); return nullptr; }
+	Gdiplus::BitmapData bitmapData;
+	Gdiplus::Rect rect(0, 0, static_cast<INT>(width), static_cast<INT>(height));
+	if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead,
+		PixelFormat32bppARGB, &bitmapData) != Gdiplus::Ok)
+	{
+		delete bitmap;
+		return nullptr;
+	}
 
-	IWICFormatConverter* converter = nullptr;
-	hr = wicFactory->CreateFormatConverter(&converter);
-	if (FAILED(hr)) { frame->Release(); wicFactory->Release(); return nullptr; }
+	// GDI+ gives us BGRA (PixelFormat32bppARGB is actually BGRA in memory).
+	// D3D11 wants RGBA. Swizzle B<->R in a local buffer.
+	std::vector<BYTE> rgba(width * height * 4);
+	const BYTE* src = static_cast<const BYTE*>(bitmapData.Scan0);
+	for (UINT y = 0; y < height; ++y)
+	{
+		const BYTE* row = src + y * bitmapData.Stride;
+		BYTE* dst = rgba.data() + y * width * 4;
+		for (UINT x = 0; x < width; ++x)
+		{
+			dst[0] = row[2]; // R <- B
+			dst[1] = row[1]; // G
+			dst[2] = row[0]; // B <- R
+			dst[3] = row[3]; // A
+			row += 4;
+			dst += 4;
+		}
+	}
 
-	hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
-		WICBitmapDitherTypeNone, nullptr, 0.0,
-		WICBitmapPaletteTypeCustom);
-	frame->Release();
-	if (FAILED(hr)) { converter->Release(); wicFactory->Release(); return nullptr; }
+	bitmap->UnlockBits(&bitmapData);
+	delete bitmap;
 
-	UINT width = 0, height = 0;
-	converter->GetSize(&width, &height);
-	std::vector<BYTE> pixels(width * height * 4);
-	hr = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data());
-	converter->Release();
-	wicFactory->Release();
-	if (FAILED(hr)) return nullptr;
-
+	// Upload to D3D11.
 	ID3D11Device* device = ImGui_ImplDX11_GetDevice();
 	if (!device) return nullptr;
 
@@ -82,12 +97,11 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
 
 	D3D11_SUBRESOURCE_DATA initData = {};
-	initData.pSysMem     = pixels.data();
+	initData.pSysMem     = rgba.data();
 	initData.SysMemPitch = width * 4;
 
 	ID3D11Texture2D* tex = nullptr;
-	hr = device->CreateTexture2D(&desc, &initData, &tex);
-	if (FAILED(hr)) return nullptr;
+	if (FAILED(device->CreateTexture2D(&desc, &initData, &tex))) return nullptr;
 
 	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	srvDesc.Format              = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -95,7 +109,7 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	srvDesc.Texture2D.MipLevels = 1;
 
 	ID3D11ShaderResourceView* srv = nullptr;
-	hr = device->CreateShaderResourceView(tex, &srvDesc, &srv);
+	HRESULT hr = device->CreateShaderResourceView(tex, &srvDesc, &srv);
 	tex->Release();
 	if (FAILED(hr)) return nullptr;
 
