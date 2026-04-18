@@ -2,6 +2,9 @@
 #include "WorkshopMapLoader.h"
 #include "IMGUI/imgui_impl_dx11.h"
 
+// minizip headers - part of zlib/contrib, available via vcpkg zlib package
+#include <contrib/minizip/unzip.h>
+
 
 BAKKESMOD_PLUGIN(Pluginx64, "Workshop Map Loader & Downloader", "1.15.3", 0)
 
@@ -23,8 +26,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 {
 	if (data.empty()) return nullptr;
 
-	// Initialise GDI+ once. Using a simple token + flag is safe here because
-	// this function is only ever called from the single render thread.
 	static ULONG_PTR gdiplusToken = 0;
 	static bool gdiplusInitialised = false;
 	if (!gdiplusInitialised)
@@ -34,7 +35,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 		gdiplusInitialised = true;
 	}
 
-	// Wrap the raw bytes in a COM IStream so GDI+ can read them without a temp file.
 	IStream* stream = SHCreateMemStream(data.data(), static_cast<UINT>(data.size()));
 	if (!stream) return nullptr;
 
@@ -47,7 +47,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 		return nullptr;
 	}
 
-	// Convert to 32-bit ARGB so we get a consistent pixel layout.
 	UINT width  = bitmap->GetWidth();
 	UINT height = bitmap->GetHeight();
 
@@ -60,8 +59,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 		return nullptr;
 	}
 
-	// GDI+ gives us BGRA (PixelFormat32bppARGB is actually BGRA in memory).
-	// D3D11 wants RGBA. Swizzle B<->R in a local buffer.
 	std::vector<BYTE> rgba(width * height * 4);
 	const BYTE* src = static_cast<const BYTE*>(bitmapData.Scan0);
 	for (UINT y = 0; y < height; ++y)
@@ -70,10 +67,10 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 		BYTE* dst = rgba.data() + y * width * 4;
 		for (UINT x = 0; x < width; ++x)
 		{
-			dst[0] = row[2]; // R <- B
-			dst[1] = row[1]; // G
-			dst[2] = row[0]; // B <- R
-			dst[3] = row[3]; // A
+			dst[0] = row[2];
+			dst[1] = row[1];
+			dst[2] = row[0];
+			dst[3] = row[3];
 			row += 4;
 			dst += 4;
 		}
@@ -82,7 +79,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	bitmap->UnlockBits(&bitmapData);
 	delete bitmap;
 
-	// Upload to D3D11.
 	ID3D11Device* device = ImGui_ImplDX11_GetDevice();
 	if (!device) return nullptr;
 
@@ -113,10 +109,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	tex->Release();
 	if (FAILED(hr)) return nullptr;
 
-	// Flush the immediate context so Wine/Proton's D3D11 translation layer
-	// (DXVK or wined3d) actually submits the texture to the GPU before the
-	// next frame tries to sample it. Without this, newly created SRVs are
-	// invisible in the browse tab under Wine/Proton due to lazy batching.
 	ID3D11DeviceContext* immediateCtx = nullptr;
 	device->GetImmediateContext(&immediateCtx);
 	if (immediateCtx)
@@ -129,6 +121,103 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 }
 
 
+// ---------------------------------------------------------------------------
+// ExtractZipCpp — pure C++ zip extraction via minizip (part of zlib).
+// Works identically on Windows and Wine/Proton with zero shell involvement.
+// Returns true on success, false on any error.
+// ---------------------------------------------------------------------------
+bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
+{
+	unzFile zf = unzOpen(zipFilePath.c_str());
+	if (!zf)
+		return false;
+
+	try { fs::create_directories(fs::path(destDir)); }
+	catch (...) { unzClose(zf); return false; }
+
+	unz_global_info globalInfo;
+	if (unzGetGlobalInfo(zf, &globalInfo) != UNZ_OK)
+	{
+		unzClose(zf);
+		return false;
+	}
+
+	const size_t BUFFER_SIZE = 65536;
+	std::vector<char> buffer(BUFFER_SIZE);
+	bool success = true;
+
+	for (uLong i = 0; i < globalInfo.number_entry; ++i)
+	{
+		unz_file_info fileInfo;
+		char entryName[512];
+
+		if (unzGetCurrentFileInfo(zf, &fileInfo, entryName, sizeof(entryName),
+			nullptr, 0, nullptr, 0) != UNZ_OK)
+		{
+			success = false;
+			break;
+		}
+
+		std::string entryNameStr(entryName);
+		std::replace(entryNameStr.begin(), entryNameStr.end(), '\\', '/');
+
+		std::string destPath = destDir;
+		if (destPath.back() != '/' && destPath.back() != '\\')
+			destPath += '/';
+		destPath += entryNameStr;
+
+		if (!entryNameStr.empty() && entryNameStr.back() == '/')
+		{
+			try { fs::create_directories(fs::path(destPath)); }
+			catch (...) {}
+		}
+		else
+		{
+			try { fs::create_directories(fs::path(destPath).parent_path()); }
+			catch (...) {}
+
+			if (unzOpenCurrentFile(zf) != UNZ_OK)
+			{
+				success = false;
+				break;
+			}
+
+			std::ofstream outFile(destPath, std::ios_base::binary);
+			if (!outFile)
+			{
+				unzCloseCurrentFile(zf);
+				success = false;
+				break;
+			}
+
+			int readBytes;
+			while ((readBytes = unzReadCurrentFile(zf, buffer.data(), (unsigned)BUFFER_SIZE)) > 0)
+				outFile.write(buffer.data(), readBytes);
+
+			outFile.close();
+			unzCloseCurrentFile(zf);
+
+			if (readBytes < 0)
+			{
+				success = false;
+				break;
+			}
+		}
+
+		if (i + 1 < globalInfo.number_entry)
+		{
+			if (unzGoToNextFile(zf) != UNZ_OK)
+			{
+				success = false;
+				break;
+			}
+		}
+	}
+
+	unzClose(zf);
+	return success;
+}
+
 
 std::string GameSetting::GetSelectedValue()
 {
@@ -138,31 +227,19 @@ std::string GameSetting::GetSelectedValue()
 
 void Pluginx64::onLoad()
 {
-	// REMOVED: gameWrapper->RegisterDrawable(...)
-	// Controller open/close check now runs inside Render() via PluginWindow,
-	// which is the correct path and does not block the game render thread.
-
 	BakkesmodPath = gameWrapper->GetBakkesModPath().string() + "\\";
-	// FIX: Forward slashes for Wine/Proton compatibility
 	IfNoPreviewImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/NoPreview.jpg";
 
 	std::string RLWin64_Path = std::filesystem::current_path().string();
 	RLCookedPCConsole_Path = RLWin64_Path.substr(0, RLWin64_Path.length() - 14) + "TAGame\\CookedPCConsole";
 
-	// FIX: Forward slashes for Wine/Proton compatibility
 	std::string Data_WorkshopMapLoader_Path = BakkesmodPath + "data/WorkshopMapLoader/";
 
-	//Load logos
 	RLMAPSLogoImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/rlmapslogo.png", false, true);
-
-	//Load display mode images
 	MapsDisplayMode_Logo1_Image = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo1.png", false, true);
 	MapsDisplayMode_Logo2_Image = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo2.png", false, true);
 	MapsDisplayMode_Logo1_SelectedImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo1_selected.png", false, true);
 	MapsDisplayMode_Logo2_SelectedImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo2_selected.png", false, true);
-
-
-	
 
 	if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\workshopmaploader.cfg"))
 	{
@@ -178,31 +255,20 @@ void Pluginx64::onLoad()
 		ControllerScrollSensitivity = std::stoi(CFGVariablesList.at(8));
 
 		if (CFGVariablesList.size() >= 11)
-		{
 			UseController = (CFGVariablesList.at(10) == "1");
-		}
-
 
 		FR = (CFGVariablesList.at(1) == "1");
 		HasSeeNewUpdateAlert = (CFGVariablesList.at(3) == "1");
 
-
 		if (CFGVariablesList.size() >= 12)
-		{
 			EnableAntiFreezeFix = (CFGVariablesList.at(11) == "1");
-		}
 
-		if (CFGVariablesList.size() >= 11) //the user has the new version
-		{
+		if (CFGVariablesList.size() >= 11)
 			HasSeeNewUpdateAlert = (PluginVersion == CFGVariablesList.at(9));
-		}
-		else  //the user has the old version
-		{
+		else
 			HasSeeNewUpdateAlert = false;
-		}
 
-
-		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf)); //Make  MapsFolderPathBuf = MapsFolderPath
+		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf));
 	}
 	else
 	{
@@ -210,19 +276,14 @@ void Pluginx64::onLoad()
 
 		if (!Directory_Or_File_Exists(RLCookedPCConsole_Path.string() + "\\mods"))
 		{
-			try
-			{
-				fs::create_directory(RLCookedPCConsole_Path.string() + "\\mods");
-			}
-			catch (const std::exception& ex) //manage errors when trying to create a folder in an administrator folder
-			{
-				cvarManager->log(ex.what());
-			}
+			try { fs::create_directory(RLCookedPCConsole_Path.string() + "\\mods"); }
+			catch (const std::exception& ex) { cvarManager->log(ex.what()); }
 		}
 		MapsFolderPath = RLCookedPCConsole_Path.string() + "\\mods";
 
 		FR = false;
-		unzipMethod = "Powershell";
+		// FIX: Default to CppZip — works on both Windows and Wine/Proton without any shell
+		unzipMethod = "CppZip";
 		HasSeeNewUpdateAlert = false;
 		dontAsk = 0;
 		MapsDisplayMode = 0;
@@ -232,25 +293,16 @@ void Pluginx64::onLoad()
 		PluginVersion = "1.15.2";
 		EnableAntiFreezeFix = false;
 
-		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf)); //Make  MapsFolderPathBuf = MapsFolderPath
+		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf));
 		SaveInCFG();
 	}
 
-	// Ensure the browse-tab image cache directory exists.
-	// Without this, DownloadPreviewImage ofstream silently fails and images never load.
 	{
 		std::string imgCacheDir = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS";
-		try
-		{
-			fs::create_directories(fs::path(imgCacheDir));
-		}
-		catch (const std::exception& ex)
-		{
-			cvarManager->log(std::string("Failed to create image cache dir: ") + ex.what());
-		}
+		try { fs::create_directories(fs::path(imgCacheDir)); }
+		catch (const std::exception& ex) { cvarManager->log(std::string("Failed to create image cache dir: ") + ex.what()); }
 	}
 
-	// PERF: Apply language strings once on load instead of every frame in Render()
 	ApplyLanguage();
 }
 
@@ -265,7 +317,6 @@ void Pluginx64::checkOpenMenuWithController(CanvasWrapper canvas)
 		return;
 
 	Gamepad ds4 = Gamepad(1);
-
 	ds4.Update();
 
 	if (ds4.Connected())
@@ -285,7 +336,6 @@ void Pluginx64::checkOpenMenuWithController(CanvasWrapper canvas)
 			ButtonsWasPressed = false;
 		}
 	}
-	
 }
 
 
@@ -301,25 +351,21 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 	if (myfile.is_open())
 	{
 		while (std::getline(myfile, line))
-		{
 			Text += line;
-		}
 		myfile.close();
 	}
 
-	//Parse response json
 	Json::Value actualJson;
 	Json::Reader reader;
-
 	reader.parse(Text, actualJson);
 
 	std::string MapTitle = actualJson["Title"].asString();
 	std::string MapDescription = actualJson["Description"].asString();
 	std::string MapAuthor = actualJson["Author"].asString();
 
-	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end()); //remove newlines
-	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end()); //remove newlines
-	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end()); //remove newlines
+	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end());
+	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end());
+	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end());
 
 	Infos.push_back(MapTitle);
 	Infos.push_back(MapDescription);
@@ -338,9 +384,7 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 	for (const auto& dir : fs::directory_iterator(mapsfolders))
 	{
 		if (dir.is_directory())
-		{
 			MapsDirectories.push_back(dir.path());
-		}
 	}
 
 	if (MapsDirectories.size() == 0) { cvarManager->log("No maps detected"); return; }
@@ -353,16 +397,11 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		Map map;
 		map.Folder = MapsDirectories.at(i).string();
 
-
-		renameFileToUPK(CurrentMapDirectory);		//rename the map udk to upk, for people that already had the plugin
-
+		renameFileToUPK(CurrentMapDirectory);
 
 		int nbFilesInDirectory = 0;
-		//get the numbers of files in the current map directory
 		for (const auto& file : fs::directory_iterator(CurrentMapDirectory))
-		{
 			nbFilesInDirectory++;
-		}
 
 		if (nbFilesInDirectory > 0)
 		{
@@ -371,6 +410,7 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 			bool hasFoundPreview = false;
 			bool hasFoundJSON = false;
 			bool hasFoundZIP = false;
+
 			for (const auto& file : fs::directory_iterator(CurrentMapDirectory))
 			{
 				std::string fileExtension = file.path().filename().extension().string();
@@ -382,12 +422,10 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 					{
 						map.JsonFile = file.path().string();
 						hasFoundJSON = true;
-
 						std::vector<std::string> MapInfosList = GetJSONLocalMapInfos(map.JsonFile);
 						map.mapName = MapInfosList.at(0);
 						map.mapDescription = MapInfosList.at(1);
 						map.mapAuthor = MapInfosList.at(2);
-
 						cvarManager->log("JSON name  : " + file.path().filename().string());
 					}
 				}
@@ -431,7 +469,6 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 					}
 				}
 
-
 				if (!hasFoundUPK && fileExtension == ".upk")
 				{
 					map.UpkFile = file.path();
@@ -443,7 +480,6 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 					{
 						map.UpkFile = "NoUpkFound";
 						cvarManager->log("No upk found in this folder : " + CurrentMapDirectory.string());
-						cvarManager->log("You have to extract the files manually of this .zip : " + CurrentMapDirectory.string() + "/" + CurrentMapDirectory.filename().string() + ".zip");
 					}
 				}
 			}
@@ -458,12 +494,10 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 			map.isPreviewImageLoaded = true;
 		}
 
-
 		MapList.push_back(map);
 		cvarManager->log("");
 	}
 
-	// PERF: Rebuild cached split lists so Render() doesn't do it every frame
 	cachedNoUpkMapList.clear();
 	cachedGoodMapList.clear();
 	for (auto& map : MapList)
@@ -482,19 +516,12 @@ void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::
 	std::string workshopSafeMapName = replace(mapName, *" ", *"_");
 	std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "-", "#" };
 	for (auto special : specials)
-	{
 		eraseAll(workshopSafeMapName, special);
-	}
 
 	if (mapsDirectoryPath.string().back() == '/' || mapsDirectoryPath.string().back() == '\\')
-	{
 		Workshop_Dl_Path = mapsDirectoryPath.string() + workshopSafeMapName;
-	}
 	else
-	{
 		Workshop_Dl_Path = mapsDirectoryPath.string() + "/" + workshopSafeMapName;
-	}
-
 
 	try
 	{
@@ -508,7 +535,6 @@ void Pluginx64::AddMapManually(std::string mapName, std::string mapAuthor, std::
 		FolderErrorBool = true;
 		return;
 	}
-
 
 	if (Directory_Or_File_Exists(mapFilePath))
 	{
@@ -546,13 +572,7 @@ void Pluginx64::CreateJSONLocalWorkshopInfos(std::string jsonFileName, std::stri
 {
 	std::string filename = workshopMapPath + jsonFileName + ".json";
 	std::ofstream JSONFile(filename);
-
-	std::string Title = mapTitle;
-	std::string Author = mapAuthor;
-	std::string Description = mapDescription;
-	std::string PreviewUrl = mapPreviewUrl;
-
-	JSONFile << "{\"Title\":\"" + Title + "\",\"Author\":\"" + Author + "\",\"Description\":\"" + Description + "\",\"PreviewUrl\":\"" + PreviewUrl + "\"}";
+	JSONFile << "{\"Title\":\"" + mapTitle + "\",\"Author\":\"" + mapAuthor + "\",\"Description\":\"" + mapDescription + "\",\"PreviewUrl\":\"" + mapPreviewUrl + "\"}";
 	JSONFile.close();
 }
 
@@ -561,11 +581,8 @@ void Pluginx64::CreateUnzipBatchFile(std::string destinationPath, std::string zi
 	std::string filename = BakkesmodPath + "data\\WorkshopMapLoader\\temp\\unzip.bat";
 	std::ofstream BatFile(filename);
 
-	std::string Destination_Path = destinationPath;
-	std::string ZIPFile_Path = zipFilePath;
-
-	std::string Correct_File_Path = replace(Destination_Path, *"/", *"\\");
-	std::string Correct_ZIPFile_Path = replace(ZIPFile_Path, *"/", *"\\");
+	std::string Correct_File_Path = replace(destinationPath, *"/", *"\\");
+	std::string Correct_ZIPFile_Path = replace(zipFilePath, *"/", *"\\");
 
 	BatFile << "@echo off\n";
 	BatFile << "setlocal\n";
@@ -589,7 +606,6 @@ void Pluginx64::CreateUnzipBatchFile(std::string destinationPath, std::string zi
 	BatFile << "if exist %vbs% del /f /q %vbs%\n";
 
 	BatFile.close();
-
 	system(filename.c_str());
 }
 
@@ -600,7 +616,6 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 {
 	RLMAPS_Searching = true;
 
-	// Clear the list - ImageWrapper handles its own cleanup via shared_ptr
 	{
 		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 		RLMAPS_MapResultList.clear();
@@ -613,29 +628,20 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 		t2.detach();
 	}
 
-
 	cpr::Response Request_MapInfos = cpr::Get(cpr::Url{ rlmaps_url + keyWord + "&page=" + std::to_string(IndexPage) });
-	
-	//Parse response json
+
 	Json::Value actualJson;
 	Json::Reader reader;
-
 	reader.parse(Request_MapInfos.text, actualJson);
-
 	const Json::Value maps = actualJson;
 
 	RLMAPS_NumberOfMapsFound = maps.size();
-
-	// Reserve exact capacity so concurrent push_backs never trigger reallocation.
-	// This means .at(i) on the render thread is always valid once the element exists,
-	// even without holding the mutex during the draw loop.
 	RLMAPS_MapResultList.reserve(maps.size());
 
 	for (int index = 0; index < maps.size(); ++index)
 	{
 		std::thread t2(&Pluginx64::GetMapResult, this, maps, index);
 		t2.detach();
-
 		Sleep(100);
 	}
 
@@ -667,9 +673,6 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	reader2.parse(Request_MapDownloadLinks.text, actualJson2);
 	const Json::Value maps2 = actualJson2;
 
-
-	// Images are always stored as "RLMPreview.jpg" on the master branch of each
-	// project. The package registry URLs in the release assets are 404 (deleted).
 	std::string projectPath = maps[index]["path_with_namespace"].asString();
 	std::string pictureUrl = "https://celab.jetfox.ovh/" + projectPath + "/-/raw/master/RLMPreview.jpg";
 
@@ -682,7 +685,6 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 		release.description = maps2[release_index]["description"].asString();
 		release.pictureLink = pictureUrl;
 
-		// Find the download link (non-image asset)
 		const Json::Value& links = maps2[release_index]["assets"]["links"];
 		for (int li = 0; li < (int)links.size(); ++li)
 		{
@@ -697,7 +699,6 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 				break;
 			}
 		}
-
 		releases.push_back(release);
 	}
 
@@ -705,13 +706,11 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	result.Size = "10000000";
 	result.Author = maps[index]["namespace"]["path"].asString();
 	result.PreviewUrl = pictureUrl;
-
 	result.Image = nullptr;
 	result.isImageLoaded = false;
 
 	cvarManager->log("Map : " + result.Name);
 
-	// FIX: Use forward slashes — backslash paths fail silently under Wine/Proton
 	std::filesystem::path resultImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS/" + result.ID + ".jfif";
 
 	if (Directory_Or_File_Exists(resultImagePath))
@@ -730,7 +729,6 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 		if (!result.PreviewUrl.empty())
 		{
 			result.IsDownloadingPreview = true;
-
 			int listIndex;
 			{
 				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
@@ -747,12 +745,10 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	}
 	else
 	{
-		// Image already cached on disk - load via ImageWrapper, same as local maps
 		result.ImagePath = resultImagePath;
 		result.Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
 		result.isImageLoaded = true;
 		result.IsDownloadingPreview = false;
-
 		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 		RLMAPS_MapResultList.push_back(result);
 	}
@@ -769,7 +765,6 @@ void Pluginx64::GetNumpPages(std::string keyWord)
 
 		Json::Value actualJson;
 		Json::Reader reader;
-
 		reader.parse(Request_Page.text, actualJson);
 		const Json::Value maps = actualJson;
 
@@ -781,69 +776,47 @@ void Pluginx64::GetNumpPages(std::string keyWord)
 void Pluginx64::GetMapSize(std::string donwloadUrl)
 {
 	cpr::Response Request_Page = cpr::Head(cpr::Url{ donwloadUrl });
-
 	std::string locationstr = Request_Page.raw_header.substr(Request_Page.raw_header.find("Location: ") + 10, Request_Page.raw_header.find("Vary:") - Request_Page.raw_header.find("Location: ") - 10);
 	cvarManager->log("location found : " + locationstr);
-
 	cpr::Response Request_size = cpr::Get(cpr::Url{ locationstr });
 	cvarManager->log("HEADERS : " + Request_size.raw_header);
 }
 
 
-//Quick search ctrl+f
 std::vector<Map> Pluginx64::QuickSearch_GetMapList(std::string keyWord)
 {
 	std::vector<Map> List;
 	for (auto map : MapList)
 	{
 		std::string mapName = map.mapName;
-
 		std::transform(mapName.begin(), mapName.end(), mapName.begin(), ::tolower);
 		std::transform(keyWord.begin(), keyWord.end(), keyWord.begin(), ::tolower);
-
 		if (mapName.find(keyWord) != std::string::npos)
-		{
 			List.push_back(map);
-		}
 	}
 	return List;
 }
 
 
-
 void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult mapResult, RLMAPS_Release release)
 {
-
 	UserIsChoosingYESorNO = true;
-
 	while (UserIsChoosingYESorNO)
-	{
 		Sleep(100);
-	}
 
 	if (!AcceptTheDownload)
-	{
 		return;
-	}
 
 	std::string Workshop_Dl_Path = "";
 	std::string workshopSafeMapName = replace(mapResult.Name, *" ", *"_");
 	std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "-", "#" };
 	for (auto special : specials)
-	{
 		eraseAll(workshopSafeMapName, special);
-	}
-
 
 	if (folderpath.back() == '/' || folderpath.back() == '\\')
-	{
 		Workshop_Dl_Path = folderpath + workshopSafeMapName;
-	}
 	else
-	{
 		Workshop_Dl_Path = folderpath + "/" + workshopSafeMapName;
-	}
-
 
 	try
 	{
@@ -858,7 +831,6 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 		return;
 	}
 
-
 	CreateJSONLocalWorkshopInfos(workshopSafeMapName, Workshop_Dl_Path + "/", mapResult.Name, mapResult.Author, mapResult.Description, mapResult.PreviewUrl);
 	cvarManager->log("JSON Created : " + Workshop_Dl_Path + "/" + workshopSafeMapName + ".json");
 
@@ -872,7 +844,6 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 		cvarManager->log("Couldn't find preview to paste");
 	}
 
-	
 	std::string download_url = release.downloadLink;
 	cvarManager->log("Download URL : " + download_url);
 	std::string Folder_Path = Workshop_Dl_Path + "/" + release.zipName;
@@ -897,7 +868,6 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 			if (out_file)
 			{
 				out_file.write(data, size);
-
 				cvarManager->log("Workshop Downloaded in : " + Workshop_Dl_Path);
 				RLMAPS_IsDownloadingWorkshop = false;
 			}
@@ -906,12 +876,23 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 	while (RLMAPS_IsDownloadingWorkshop == true)
 	{
 		cvarManager->log("downloading...............");
-
 		RLMAPS_WorkshopDownload_Progress = RLMAPS_Download_Progress;
 		Sleep(500);
 	}
 
-	if (unzipMethod == "Bat")
+	// FIX: CppZip is the new default — pure C++ extraction via minizip.
+	// No shell, no VBScript, no Powershell. Works on Windows and Wine/Proton identically.
+	// Bat and Powershell remain available as legacy fallbacks.
+	if (unzipMethod == "CppZip")
+	{
+		cvarManager->log("Extracting via CppZip (minizip)...");
+		bool ok = ExtractZipCpp(Folder_Path, Workshop_Dl_Path);
+		if (ok)
+			cvarManager->log("CppZip extraction succeeded.");
+		else
+			cvarManager->log("CppZip extraction failed - zip may be corrupt or path issue.");
+	}
+	else if (unzipMethod == "Bat")
 	{
 		CreateUnzipBatchFile(Workshop_Dl_Path, Folder_Path);
 	}
@@ -921,11 +902,10 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 		system(extractCommand.c_str());
 	}
 
-
 	int checkTime = 0;
-	while(UdkInDirectory(Workshop_Dl_Path) == "Null")
+	while (UdkInDirectory(Workshop_Dl_Path) == "Null")
 	{
-		cvarManager->log("Extracting zip file");
+		cvarManager->log("Waiting for extracted file...");
 		if (checkTime > 10)
 		{
 			cvarManager->log("Failed extracting the map zip file");
@@ -935,9 +915,7 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 		checkTime++;
 	}
 
-
 	cvarManager->log("File Extracted");
-
 	renameFileToUPK(Workshop_Dl_Path);
 }
 
@@ -948,11 +926,10 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 void Pluginx64::DownloadWorkshopTextures()
 {
 	std::string ZipFilePath = BakkesmodPath + "data\\WorkshopMapLoader\\Textures.zip";
-	
+
 	if (!Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\Textures.zip"))
 	{
 		IsDownloading_WorkshopTextures = true;
-
 		cvarManager->log("Starting download : Workshop Textures");
 
 		CurlRequest req;
@@ -968,23 +945,30 @@ void Pluginx64::DownloadWorkshopTextures()
 				if (out_file)
 				{
 					out_file.write(data, size);
-
 					cvarManager->log("Textures downloaded : " + ZipFilePath);
 					IsDownloading_WorkshopTextures = false;
 				}
 			});
 
-
 		while (IsDownloading_WorkshopTextures)
 		{
 			cvarManager->log("downloading textures.......");
-
 			DownloadTextrures_ProgressDisplayed = Download_Textrures_Progress;
 			Sleep(500);
 		}
 	}
 
-	if (unzipMethod == "Bat")
+	// FIX: Use CppZip for textures too
+	if (unzipMethod == "CppZip")
+	{
+		cvarManager->log("Extracting textures via CppZip...");
+		bool ok = ExtractZipCpp(ZipFilePath, RLCookedPCConsole_Path.string());
+		if (ok)
+			cvarManager->log("Texture extraction succeeded.");
+		else
+			cvarManager->log("Texture extraction failed.");
+	}
+	else if (unzipMethod == "Bat")
 	{
 		CreateUnzipBatchFile(RLCookedPCConsole_Path.string(), ZipFilePath);
 	}
@@ -1003,14 +987,10 @@ std::vector<std::string> Pluginx64::CheckExist_TexturesFiles()
 	for (auto textureFile : WorkshopTexturesFilesList)
 	{
 		if (!Directory_Or_File_Exists(RLCookedPCConsole_Path.string() + "\\" + textureFile))
-		{
 			missingFiles.push_back(textureFile);
-		}
 	}
-
 	return missingFiles;
 }
-
 
 
 //Utils
@@ -1030,12 +1010,8 @@ std::wstring Pluginx64::s2ws(const std::string& s)
 std::string Pluginx64::replace(std::string s, char c1, char c2)
 {
 	int l = s.length();
-
 	for (int i = 0; i < l; i++)
-	{
-		if (s[i] == c1)
-			s[i] = c2;
-	}
+		if (s[i] == c1) s[i] = c2;
 	return s;
 }
 
@@ -1047,37 +1023,28 @@ std::string Pluginx64::convertToMB(std::string numberToConvert)
 		result = numberToConvert.erase(numberToConvert.length() - 6) + " GB";
 		return result;
 	}
-
 	if (numberToConvert.length() > 6 && numberToConvert.length() < 10)
 	{
 		std::string result = numberToConvert.insert(numberToConvert.length() - 6, ",");
 		result = numberToConvert.erase(numberToConvert.length() - 4) + " MB";
 		return result;
 	}
-
 	if (numberToConvert.length() > 3 && numberToConvert.length() < 7)
 	{
 		std::string result = numberToConvert.insert(numberToConvert.length() - 3, ",");
 		result = numberToConvert.erase(numberToConvert.length() - 2) + " kB";
 		return result;
 	}
-
 	if (numberToConvert.length() > 0 && numberToConvert.length() < 4)
-	{
-		std::string result = numberToConvert + " Bytes";
-		return result;
-	}
+		return numberToConvert + " Bytes";
+	return numberToConvert;
 }
 
 bool Pluginx64::Directory_Or_File_Exists(const fs::path& p, fs::file_status s)
 {
-	bool DirectoryExists;
 	if (fs::status_known(s) ? fs::exists(s) : fs::exists(p))
-		DirectoryExists = true;
-	else
-		DirectoryExists = false;
-
-	return DirectoryExists;
+		return true;
+	return false;
 }
 
 std::vector<std::string> Pluginx64::FindAllSubstringInAString(std::string texte, std::string beginString, std::string endString)
@@ -1085,23 +1052,19 @@ std::vector<std::string> Pluginx64::FindAllSubstringInAString(std::string texte,
 	std::vector<std::string> List;
 	std::vector<std::size_t> IndexPos;
 
-	int occurrences = 0;
 	std::string::size_type posBegin = 0;
 	std::string s = texte;
-	std::string BeginTarget = beginString;
 
-	while ((posBegin = s.find(BeginTarget, posBegin)) != std::string::npos)
+	while ((posBegin = s.find(beginString, posBegin)) != std::string::npos)
 	{
-		++occurrences;
 		IndexPos.push_back(posBegin);
-		posBegin += BeginTarget.length();
+		posBegin += beginString.length();
 	}
 
 	for (int i = 0; i < IndexPos.size(); i++)
 	{
 		s = texte;
 		s.erase(0, IndexPos.at(i));
-
 		std::string resultString = s.substr(beginString.length(), s.find(endString) - beginString.length());
 		List.push_back(resultString);
 	}
@@ -1113,9 +1076,7 @@ std::string Pluginx64::UdkInDirectory(std::string dirPath)
 	for (const auto& file : fs::directory_iterator(dirPath))
 	{
 		if (file.path().extension().string() == ".udk" || file.path().extension().string() == ".upk")
-		{
 			return file.path().string();
-		}
 	}
 	return "Null";
 }
@@ -1126,19 +1087,15 @@ void Pluginx64::renameFileToUPK(std::filesystem::path filePath)
 		return;
 
 	for (std::string texture : WorkshopTexturesFilesList)
-	{
-		if (filePath.filename().string() == texture)
-			return;
-	}
+		if (filePath.filename().string() == texture) return;
 
 	std::string UDKPath = UdkInDirectory(filePath.string());
-	if (UDKPath == "Null") { return; }
+	if (UDKPath == "Null") return;
 
 	if (UDKPath.find("_antifreeze") != std::string::npos)
 	{
 		std::string oldUDKPath = UDKPath;
 		eraseAll(UDKPath, "_antifreeze");
-
 		if (rename(oldUDKPath.c_str(), UDKPath.c_str()) != 0)
 			cvarManager->log("Error renaming file");
 		else
@@ -1147,13 +1104,11 @@ void Pluginx64::renameFileToUPK(std::filesystem::path filePath)
 	else
 	{
 		std::string UPKPath_antifreeze = UDKPath.substr(0, UDKPath.length() - 4) + "_antifreeze.upk";
-
 		if (rename(UDKPath.c_str(), UPKPath_antifreeze.c_str()) != 0)
 			cvarManager->log("Error renaming file for antifreeze");
 		else
 			cvarManager->log("File renamed successfully for antifreeze");
 	}
-
 }
 
 void Pluginx64::SaveInCFG()
@@ -1175,7 +1130,6 @@ void Pluginx64::SaveInCFG()
 	CFGFile << "EnableAntiFreezeFix = \"" + std::to_string(EnableAntiFreezeFix) + "\"";
 
 	CFGFile.close();
-
 	cvarManager->log("Saved in cfg");
 }
 
@@ -1194,7 +1148,6 @@ std::vector<std::string> Pluginx64::GetMapsFolderPathInCfg(std::string cfgFilePa
 		}
 		myfile.close();
 	}
-
 	return CfgInfosList;
 }
 
@@ -1202,7 +1155,6 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 {
 	std::string download_url = downloadUrl;
 	std::string File_Path = filePath;
-
 	std::replace(File_Path.begin(), File_Path.end(), '\\', '/');
 
 	CurlRequest req;
@@ -1218,11 +1170,9 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
-			// Ensure parent directory exists
 			try { fs::create_directories(fs::path(File_Path).parent_path()); }
 			catch (...) {}
 
-			// Write image to disk
 			std::ofstream imgFile(File_Path, std::ios_base::binary);
 			if (!imgFile)
 			{
@@ -1235,7 +1185,6 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 			imgFile.close();
 			cvarManager->log("PREVIEW SAVED: " + File_Path);
 
-			// Load via ImageWrapper, exactly like local maps do
 			gameWrapper->Execute([this, File_Path, mapResultIndex](GameWrapper* gw)
 			{
 				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
@@ -1246,7 +1195,6 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				cvarManager->log("Preview loaded via ImageWrapper: " + File_Path);
 			});
 		});
-
 }
 
 bool Pluginx64::FileIsInDirectoryRecursive(std::string dirPath, std::string filename)
@@ -1254,27 +1202,18 @@ bool Pluginx64::FileIsInDirectoryRecursive(std::string dirPath, std::string file
 	for (const auto& dir : fs::directory_iterator(dirPath))
 	{
 		if (dir.is_directory())
-		{
 			for (const auto& file : fs::recursive_directory_iterator(dir.path()))
 				if (!file.is_directory() && file.path().filename().string() == filename)
-				{
 					return true;
-				}
-		}
 	}
 	return false;
 }
 
-float Pluginx64::DoRatio(float x, float y)
-{
-	float result = x / y;
-	return result;
-}
+float Pluginx64::DoRatio(float x, float y) { return x / y; }
 
 void Pluginx64::CleanHTML(std::string& S)
 {
-	if (S == "")
-		return;
+	if (S == "") return;
 	int n = S.length();
 	int start = 0, end = 0;
 
@@ -1282,48 +1221,24 @@ void Pluginx64::CleanHTML(std::string& S)
 	{
 		n = S.length();
 		for (int i = 0; i < n; i++) {
-			if (S[i] == '<') {
-				start = i;
-				break;
-			}
-			if (i == n - 1)
-			{
-				return;
-			}
+			if (S[i] == '<') { start = i; break; }
+			if (i == n - 1) return;
 		}
-
-		while (S[start] == ' ') {
-			start++;
-		}
-
+		while (S[start] == ' ') start++;
 		for (int i = start; i < n; i++) {
-			if (S[i] == '>') {
-				end = i;
-				break;
-			}
+			if (S[i] == '>') { end = i; break; }
 		}
-
 		std::string result;
-		for (int j = start; j <= end; j++) {
-			result += S[j];
-		}
-
+		for (int j = start; j <= end; j++) result += S[j];
 		if (result == "<br>")
-		{
 			S.replace(start, (end + 1) - start, "\n");
-		}
 		else
-		{
 			S.erase(start, (end + 1) - start);
-		}
-
 	}
-
 }
 
 void Pluginx64::replaceAll(std::string& str, const std::string& from, const std::string& to) {
-	if (from.empty())
-		return;
+	if (from.empty()) return;
 	size_t start_pos = 0;
 	while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
 		str.replace(start_pos, from.length(), to);
@@ -1332,12 +1247,10 @@ void Pluginx64::replaceAll(std::string& str, const std::string& from, const std:
 }
 
 void Pluginx64::eraseAll(std::string& str, const std::string& from) {
-	if (from.empty())
-		return;
+	if (from.empty()) return;
 	size_t start_pos = 0;
-	while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+	while ((start_pos = str.find(from, start_pos)) != std::string::npos)
 		str.erase(start_pos, from.length());
-	}
 }
 
 std::vector<std::string> Pluginx64::GetDrives()
@@ -1347,19 +1260,12 @@ std::vector<std::string> Pluginx64::GetDrives()
 	int iASCIILetter = (int)'a';
 
 	DWORD dwDrivesMask = GetLogicalDrives();
+	if (dwDrivesMask == 0) { printf("Failed to acquire mask of drives.\n"); exit(EXIT_FAILURE); }
 
-	if (dwDrivesMask == 0) {
-		printf("Failed to acquire mask of drives.\n");
-		exit(EXIT_FAILURE);
-	}
-
-	printf("Drives available:\n");
 	while (iCounter < 24) {
 		if (dwDrivesMask & (1 << iCounter)) {
-			printf("%c:\\ \n", iASCIILetter + iCounter);
 			char driveLetter = iASCIILetter + iCounter;
-			std::string str(1, driveLetter);
-			Drives.push_back(str);
+			Drives.push_back(std::string(1, driveLetter));
 		}
 		iCounter++;
 	}
@@ -1371,7 +1277,6 @@ void Pluginx64::ApplyLanguage()
 {
 	if (!FR)
 	{
-		//Menubar
 		SettingsText = "Settings";
 		MultiplayerText = "Multiplayer";
 		LastUpdateText = "Last Update";
@@ -1383,8 +1288,6 @@ void Pluginx64::ApplyLanguage()
 		LanguageText = "Language";
 		ExtractMethodText = "Extract Method";
 		WarningText = "Warning :";
-
-		//Controller settings
 		ControllerText = "Controller";
 		UseControllerText = "Use Controller";
 		ControllsText = "Controlls";
@@ -1396,22 +1299,15 @@ void Pluginx64::ApplyLanguage()
 		ControllsLitText[3] = "Right joystick : scroll";
 		ControllsLitText[4] = "LB/L1 : click";
 		ControllsLitText[5] = "B/O : close the menu";
-
-		//1st Tab
 		Tab1MapLoaderText = "Map Loader";
 		Label1Text = "Put the path of the maps folder :";
 		SelectMapsFolderText = "Select maps folder";
 		RefreshMapsButtonText = "Refresh Maps";
 		SavePathText = "Save Path";
 		MapsPerLineText = "Maps Per Line :";
-		//context menu strip
 		OpenMapDirText = "Open map directory";
 		DeleteMapText = "Delete map";
-
-		//LauchMode Popup
 		CancelText = "Cancel";
-
-		//Add Map
 		AddMapText = "Add Map";
 		NameText = "Name :";
 		AuthorText = "Author :";
@@ -1421,8 +1317,6 @@ void Pluginx64::ApplyLanguage()
 		FieldEmptyText = "A field is empty !";
 		ConfirmLabelText = "Do you really want to add this map ?";
 		MapAddedSuccessfullyText = "Map added successfully !";
-
-		//2nd Tab
 		DownloadButtonText = "Download";
 		Label3Text = "Search A Workshop :";
 		SearchButtonText = "Search";
@@ -1430,13 +1324,9 @@ void Pluginx64::ApplyLanguage()
 		WorkshopsFoundText = "Workshops Found :";
 		BrowseMapsText = "Browse Maps";
 		Tab3SearchWorkshopText = "Search Workshop (rocketleaguemaps.us)";
-
-		//Search Result
 		ResultByText = "By ";
 		ResultSizeText = "Size : ";
 		DownloadMapButtonText = "Download Map";
-
-		//Warnings
 		DirNotExistText = "This directory is not valid !";
 		DownloadFailedText = "Download Failed !" + DownloadFailedErrorText;
 		WantToDawnloadText = "Do you really want to download?\nYou'll not be able to cancel if you start it.";
@@ -1444,30 +1334,22 @@ void Pluginx64::ApplyLanguage()
 		NOButtonText = "NO";
 		IsDownloadDingWarningText = "A download is already running !\nYou cannot download 2 workshops at the same time.";
 		PathSavedText = "Path saved successfully !";
-
-		//ExtractMapFiles
 		EMFMessageText1 = "The map isn't extracted from ";
 		EMFMessageText2 = "\nChoose an extract method (you need to click on refresh maps after extracting) :";
 		EMFStillDoesntWorkText = "Still not working";
-		//ExtractManually
 		EMLabelText = "If both of the extract methods didn't work, you need to extract the files manually of ";
-
-		//Download Texutures
 		DLTLabel1Text = "It seems like the workshop textures aren't installed in " + RLCookedPCConsole_Path.string();
 		DLTLabel2Text = "You can still play without the workshop textures but some maps will have some white/weird textures.";
 		DLTMissingFilesText = "Missing Files";
 		DLTTexturesInstalledText = "Workshop textures installed !";
 		CloseText = "Close";
 		DontAskText = "Don't ask me again";
-
-		//File Explorer
 		NewFolderText = "New Folder";
 		ConfirmText = "Confirm";
 		SelectText = "Select";
 	}
 	else
 	{
-		//Menubar
 		SettingsText = "Parametres";
 		MultiplayerText = "Multijoueur";
 		LastUpdateText = "Derniere Maj";
@@ -1479,8 +1361,6 @@ void Pluginx64::ApplyLanguage()
 		LanguageText = "Langue";
 		ExtractMethodText = "Methode d'extraction";
 		WarningText = "Attention :";
-
-		//Controller settings
 		ControllerText = "Manette";
 		UseControllerText = "Activer La Manette";
 		ControllsText = "Commandes";
@@ -1492,23 +1372,15 @@ void Pluginx64::ApplyLanguage()
 		ControllsLitText[3] = "Joystick Droit : faire defiler";
 		ControllsLitText[4] = "LB/L1 : cliquer";
 		ControllsLitText[5] = "B/O : fermer le menu";
-
-		//1st Tab
 		Tab1MapLoaderText = "Charger Map";
 		Label1Text = "Mets le chemin du dossier des maps :";
 		SelectMapsFolderText = "Choisir Dossier Des Maps";
 		RefreshMapsButtonText = "Rafraichir Les Maps";
 		SavePathText = "Sauvegarder Le Chemin";
 		MapsPerLineText = "Maps Par Ligne :";
-
-		//context menu strip
 		OpenMapDirText = "Ouvrir le dossier de la map";
 		DeleteMapText = "Supprimer la map";
-
-		//LauchMode Popup
 		CancelText = "Annuler";
-
-		//Add Map
 		AddMapText = "Ajouter Map";
 		NameText = "Nom :";
 		AuthorText = "Auteur :";
@@ -1518,8 +1390,6 @@ void Pluginx64::ApplyLanguage()
 		FieldEmptyText = "Un champ est vide !";
 		ConfirmLabelText = "Veux-tu vraiment ajouter cette map ?";
 		MapAddedSuccessfullyText = "Map ajoute avec succes !";
-
-		//2nd Tab
 		DownloadButtonText = "Telecharger";
 		Label3Text = "Rechercher Un Workshop :";
 		SearchButtonText = "Rechercher";
@@ -1527,13 +1397,9 @@ void Pluginx64::ApplyLanguage()
 		WorkshopsFoundText = "Workshops Trouves :";
 		BrowseMapsText = "Parcourir Les Maps";
 		Tab3SearchWorkshopText = "Rechercher Workshop (rocketleaguemaps.us)";
-
-		//Search Result
 		ResultByText = "Par ";
 		ResultSizeText = "Taille : ";
 		DownloadMapButtonText = "Telecharger La Map";
-
-		//Warnings
 		DirNotExistText = "Ce chemin n'est pas valide !";
 		DownloadFailedText = "Le telechargement a echoue !" + DownloadFailedErrorText;
 		WantToDawnloadText = "Veux-tu vraiment telecharger?\nTu ne pourras plus l'annuler si tu le commence.";
@@ -1541,23 +1407,16 @@ void Pluginx64::ApplyLanguage()
 		NOButtonText = "NON";
 		IsDownloadDingWarningText = "Un telechargement est deja en cours !\nTu ne peux pas telecharger 2 workshops en meme temps.";
 		PathSavedText = "Le chemin a ete sauvegarde !";
-
-		//ExtractMapFiles
 		EMFMessageText1 = "La map n'est pas extrait de ";
 		EMFMessageText2 = "\nChoisis une methode d'extraction (rafraichis les maps apres l'extraction) :";
 		EMFStillDoesntWorkText = "Ne fonctionne pas";
-		//ExtractManually
 		EMLabelText = "Si les deux methodes d'extraction n'ont pas fonctionne, tu dois extraire les fichiers manuellement de ";
-
-		//Download Texutures
 		DLTLabel1Text = "Les textures des workshops ne semblent pas etre installees dans " + RLCookedPCConsole_Path.string();
 		DLTLabel2Text = "Tu peux toujours jouer sans mais des maps auront des textures blanches/bizarres.";
 		DLTMissingFilesText = "Fichiers Manquants";
 		DLTTexturesInstalledText = "Textures des workshops installees!";
 		CloseText = "Fermer";
 		DontAskText = "Ne plus me demander";
-
-		//File Explorer
 		NewFolderText = "Nouv. Dossier";
 		ConfirmText = "Confirmer";
 		SelectText = "Selectionner";
@@ -1566,6 +1425,5 @@ void Pluginx64::ApplyLanguage()
 
 void Pluginx64::onUnload()
 {
-	// ImageWrapper shared_ptrs clean up automatically
 	RLMAPS_MapResultList.clear();
 }
