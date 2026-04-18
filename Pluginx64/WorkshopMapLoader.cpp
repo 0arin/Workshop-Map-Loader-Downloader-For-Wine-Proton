@@ -1,5 +1,6 @@
 #include "pch.h"
 #include "WorkshopMapLoader.h"
+#include "IMGUI/imgui_impl_dx11.h"
 
 
 BAKKESMOD_PLUGIN(Pluginx64, "Workshop Map Loader & Downloader", "1.15.3", 0)
@@ -11,6 +12,92 @@ namespace
 }
 
 
+// ---------------------------------------------------------------------------
+// LoadTextureFromMemory — decode image bytes in-memory via WIC, upload to GPU.
+// Must be called from the render/game thread (D3D11 device context requirement).
+// Returns nullptr on any failure.
+// ---------------------------------------------------------------------------
+static ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
+{
+	if (data.empty()) return nullptr;
+
+	IWICImagingFactory* wicFactory = nullptr;
+	HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+		CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory));
+	if (FAILED(hr) || !wicFactory) return nullptr;
+
+	IWICStream* wicStream = nullptr;
+	hr = wicFactory->CreateStream(&wicStream);
+	if (FAILED(hr)) { wicFactory->Release(); return nullptr; }
+
+	hr = wicStream->InitializeFromMemory(
+		const_cast<BYTE*>(data.data()),
+		static_cast<DWORD>(data.size()));
+	if (FAILED(hr)) { wicStream->Release(); wicFactory->Release(); return nullptr; }
+
+	IWICBitmapDecoder* decoder = nullptr;
+	hr = wicFactory->CreateDecoderFromStream(
+		wicStream, nullptr, WICDecodeMetadataCacheOnLoad, &decoder);
+	wicStream->Release();
+	if (FAILED(hr)) { wicFactory->Release(); return nullptr; }
+
+	IWICBitmapFrameDecode* frame = nullptr;
+	hr = decoder->GetFrame(0, &frame);
+	decoder->Release();
+	if (FAILED(hr)) { wicFactory->Release(); return nullptr; }
+
+	IWICFormatConverter* converter = nullptr;
+	hr = wicFactory->CreateFormatConverter(&converter);
+	if (FAILED(hr)) { frame->Release(); wicFactory->Release(); return nullptr; }
+
+	hr = converter->Initialize(frame, GUID_WICPixelFormat32bppRGBA,
+		WICBitmapDitherTypeNone, nullptr, 0.0,
+		WICBitmapPaletteTypeCustom);
+	frame->Release();
+	if (FAILED(hr)) { converter->Release(); wicFactory->Release(); return nullptr; }
+
+	UINT width = 0, height = 0;
+	converter->GetSize(&width, &height);
+	std::vector<BYTE> pixels(width * height * 4);
+	hr = converter->CopyPixels(nullptr, width * 4, (UINT)pixels.size(), pixels.data());
+	converter->Release();
+	wicFactory->Release();
+	if (FAILED(hr)) return nullptr;
+
+	ID3D11Device* device = ImGui_ImplDX11_GetDevice();
+	if (!device) return nullptr;
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width            = width;
+	desc.Height           = height;
+	desc.MipLevels        = 1;
+	desc.ArraySize        = 1;
+	desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage            = D3D11_USAGE_DEFAULT;
+	desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
+
+	D3D11_SUBRESOURCE_DATA initData = {};
+	initData.pSysMem     = pixels.data();
+	initData.SysMemPitch = width * 4;
+
+	ID3D11Texture2D* tex = nullptr;
+	hr = device->CreateTexture2D(&desc, &initData, &tex);
+	if (FAILED(hr)) return nullptr;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format              = DXGI_FORMAT_R8G8B8A8_UNORM;
+	srvDesc.ViewDimension       = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels = 1;
+
+	ID3D11ShaderResourceView* srv = nullptr;
+	hr = device->CreateShaderResourceView(tex, &srvDesc, &srv);
+	tex->Release();
+	if (FAILED(hr)) return nullptr;
+
+	return srv;
+}
+
 
 std::string GameSetting::GetSelectedValue()
 {
@@ -20,18 +107,12 @@ std::string GameSetting::GetSelectedValue()
 
 void Pluginx64::onLoad()
 {
-	// REMOVED: gameWrapper->RegisterDrawable(...)
-	// Controller open/close check now runs inside Render() via PluginWindow,
-	// which is the correct path and does not block the game render thread.
-
 	BakkesmodPath = gameWrapper->GetBakkesModPath().string() + "\\";
-	// FIX: Forward slashes for Wine/Proton compatibility
 	IfNoPreviewImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/NoPreview.jpg";
 
 	std::string RLWin64_Path = std::filesystem::current_path().string();
 	RLCookedPCConsole_Path = RLWin64_Path.substr(0, RLWin64_Path.length() - 14) + "TAGame\\CookedPCConsole";
 
-	// FIX: Forward slashes for Wine/Proton compatibility
 	std::string Data_WorkshopMapLoader_Path = BakkesmodPath + "data/WorkshopMapLoader/";
 
 	//Load logos
@@ -74,17 +155,17 @@ void Pluginx64::onLoad()
 			EnableAntiFreezeFix = (CFGVariablesList.at(11) == "1");
 		}
 
-		if (CFGVariablesList.size() >= 11) //the user has the new version
+		if (CFGVariablesList.size() >= 11)
 		{
 			HasSeeNewUpdateAlert = (PluginVersion == CFGVariablesList.at(9));
 		}
-		else  //the user has the old version
+		else
 		{
 			HasSeeNewUpdateAlert = false;
 		}
 
 
-		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf)); //Make  MapsFolderPathBuf = MapsFolderPath
+		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf));
 	}
 	else
 	{
@@ -96,7 +177,7 @@ void Pluginx64::onLoad()
 			{
 				fs::create_directory(RLCookedPCConsole_Path.string() + "\\mods");
 			}
-			catch (const std::exception& ex) //manage errors when trying to create a folder in an administrator folder
+			catch (const std::exception& ex)
 			{
 				cvarManager->log(ex.what());
 			}
@@ -114,11 +195,10 @@ void Pluginx64::onLoad()
 		PluginVersion = "1.15.2";
 		EnableAntiFreezeFix = false;
 
-		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf)); //Make  MapsFolderPathBuf = MapsFolderPath
+		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf));
 		SaveInCFG();
 	}
 
-	// PERF: Apply language strings once on load instead of every frame in Render()
 	ApplyLanguage();
 }
 
@@ -175,7 +255,6 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 		myfile.close();
 	}
 
-	//Parse response json
 	Json::Value actualJson;
 	Json::Reader reader;
 
@@ -185,9 +264,9 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 	std::string MapDescription = actualJson["Description"].asString();
 	std::string MapAuthor = actualJson["Author"].asString();
 
-	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end()); //remove newlines
-	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end()); //remove newlines
-	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end()); //remove newlines
+	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end());
+	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end());
+	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end());
 
 	Infos.push_back(MapTitle);
 	Infos.push_back(MapDescription);
@@ -222,11 +301,10 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		map.Folder = MapsDirectories.at(i).string();
 
 
-		renameFileToUPK(CurrentMapDirectory);		//rename the map udk to upk, for people that already had the plugin
+		renameFileToUPK(CurrentMapDirectory);
 
 
 		int nbFilesInDirectory = 0;
-		//get the numbers of files in the current map directory
 		for (const auto& file : fs::directory_iterator(CurrentMapDirectory))
 		{
 			nbFilesInDirectory++;
@@ -331,7 +409,6 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		cvarManager->log("");
 	}
 
-	// PERF: Rebuild cached split lists so Render() doesn't do it every frame
 	cachedNoUpkMapList.clear();
 	cachedGoodMapList.clear();
 	for (auto& map : MapList)
@@ -467,7 +544,18 @@ void Pluginx64::CreateUnzipBatchFile(std::string destinationPath, std::string zi
 void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 {
 	RLMAPS_Searching = true;
+
+	// Release any existing SRV textures before clearing the list
+	for (auto& result : RLMAPS_MapResultList)
+	{
+		if (result.Image)
+		{
+			result.Image->Release();
+			result.Image = nullptr;
+		}
+	}
 	RLMAPS_MapResultList.clear();
+
 	RLMAPS_PageSelected = IndexPage;
 	if (IndexPage == 1)
 	{
@@ -479,7 +567,6 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 
 	cpr::Response Request_MapInfos = cpr::Get(cpr::Url{ rlmaps_url + keyWord + "&page=" + std::to_string(IndexPage) });
 	
-	//Parse response json
 	Json::Value actualJson;
 	Json::Reader reader;
 
@@ -548,35 +635,34 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	result.Size = "10000000";
 	result.Author = maps[index]["namespace"]["path"].asString();
 	result.PreviewUrl = releases[0].pictureLink;
+	result.Image = nullptr;
+	result.isImageLoaded = false;
 
 	cvarManager->log("Map : " + result.Name);
 
-	// FIX: Use forward slashes — backslash paths fail silently under Wine/Proton
 	std::filesystem::path resultImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS/" + result.ID + ".jfif";
 
 	if (!Directory_Or_File_Exists(resultImagePath))
 	{
 		result.IsDownloadingPreview = true;
-
 		RLMAPS_MapResultList.push_back(result);
 		DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), index);
 	}
 	else
 	{
-		// FIX: Push result first, then load ImageWrapper on game thread.
-		// ImageWrapper creates a D3D11 texture — must be on the render thread,
-		// especially under Wine/Proton where the D3D context is strict.
+		// Image already on disk — load its bytes so the render thread can upload it
 		result.ImagePath = resultImagePath;
-		result.isImageLoaded = false;
 		result.IsDownloadingPreview = false;
-		RLMAPS_MapResultList.push_back(result);
-		int cachedIndex = (int)RLMAPS_MapResultList.size() - 1;
 
-		gameWrapper->Execute([this, resultImagePath, cachedIndex](GameWrapper* gw)
-			{
-				RLMAPS_MapResultList[cachedIndex].Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
-				RLMAPS_MapResultList[cachedIndex].isImageLoaded = true;
-			});
+		std::ifstream f(resultImagePath, std::ios::binary);
+		if (f)
+		{
+			result.RawImageBytes = std::vector<unsigned char>(
+				std::istreambuf_iterator<char>(f),
+				std::istreambuf_iterator<char>());
+		}
+
+		RLMAPS_MapResultList.push_back(result);
 	}
 }
 
@@ -1025,10 +1111,6 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 	std::string download_url = downloadUrl;
 	std::string File_Path = filePath;
 
-	// FIX: Use forward slashes — URLDownloadToFile (used by the L_PATH overload)
-	// fails silently with backslash paths under Wine/Proton. We also switch to the
-	// binary data callback overload and write the file ourselves with std::ofstream,
-	// which is reliable cross-platform.
 	std::replace(File_Path.begin(), File_Path.end(), '\\', '/');
 
 	CurlRequest req;
@@ -1043,7 +1125,7 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
-			// Write the image file ourselves — reliable under Wine
+			// Write the image file to disk
 			std::ofstream imgFile(File_Path, std::ios_base::binary);
 			if (imgFile)
 			{
@@ -1058,20 +1140,13 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
+			// Store bytes for render-thread GPU upload (via LoadTextureFromMemory in Render())
+			RLMAPS_MapResultList[mapResultIndex].RawImageBytes.assign(data, data + size);
+			RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
 			RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
 
-			// FIX: ImageWrapper creates a D3D11 texture and must be constructed on
-			// the game/render thread. Under Wine/Proton the D3D context is strict
-			// about this — constructing off-thread produces a null texture silently.
-			gameWrapper->Execute([this, File_Path, mapResultIndex](GameWrapper* gw)
-				{
-					RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
-					RLMAPS_MapResultList[mapResultIndex].Image = std::make_shared<ImageWrapper>(File_Path, false, true);
-					RLMAPS_MapResultList[mapResultIndex].isImageLoaded = true;
-					cvarManager->log("Preview loaded for " + RLMAPS_MapResultList[mapResultIndex].Name);
-				});
+			cvarManager->log("Preview bytes ready for GPU upload: " + RLMAPS_MapResultList[mapResultIndex].Name);
 		});
-
 }
 
 bool Pluginx64::FileIsInDirectoryRecursive(std::string dirPath, std::string filename)
@@ -1389,4 +1464,15 @@ void Pluginx64::ApplyLanguage()
 	}
 }
 
-void Pluginx64::onUnload() {}
+void Pluginx64::onUnload()
+{
+	// Release all SRV textures on unload
+	for (auto& result : RLMAPS_MapResultList)
+	{
+		if (result.Image)
+		{
+			result.Image->Release();
+			result.Image = nullptr;
+		}
+	}
+}
