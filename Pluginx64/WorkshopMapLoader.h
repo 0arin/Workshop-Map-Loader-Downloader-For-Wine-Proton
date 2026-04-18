@@ -5,6 +5,7 @@
 #include "bakkesmod/plugin/PluginSettingsWindow.h"
 
 #include "Gamepad.h"
+#include "IMGUI/imgui_impl_dx11.h"
 
 //#include <WinUser.h>
 
@@ -43,9 +44,10 @@ struct RLMAPS_MapResult
 	std::string Author;
 	std::vector<RLMAPS_Release> releases;
 	std::filesystem::path ImagePath; //Stored in bakkesmodFolder/data/WorkshopMapLoader/Search/img/
-	std::shared_ptr<ImageWrapper> Image;
-	bool isImageLoaded;
-	bool IsDownloadingPreview;
+	ID3D11ShaderResourceView* Image = nullptr;
+	std::vector<unsigned char> RawImageBytes; // filled by bg thread, uploaded on render thread
+	bool isImageLoaded = false;
+	bool IsDownloadingPreview = false;
 };
 
 struct GameSetting
