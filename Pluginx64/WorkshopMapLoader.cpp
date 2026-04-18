@@ -296,7 +296,7 @@ void Pluginx64::onLoad()
 
 		cvarManager->log("Workshop Maps Folder : " + CFGVariablesList.at(0));
 		MapsFolderPath = CFGVariablesList.at(0);
-		unzipMethod = CFGVariablesList.at(2);
+		// unzipMethod is always CppZip
 		dontAsk = std::stoi(CFGVariablesList.at(4));
 		MapsDisplayMode = std::stoi(CFGVariablesList.at(5));
 		nbTilesPerLine = std::stoi(CFGVariablesList.at(6));
@@ -332,7 +332,7 @@ void Pluginx64::onLoad()
 
 		FR = false;
 		// FIX: Default to CppZip — works on both Windows and Wine/Proton without any shell
-		unzipMethod = "CppZip";
+		// unzipMethod is always CppZip (default)
 		HasSeeNewUpdateAlert = false;
 		dontAsk = 0;
 		MapsDisplayMode = 0;
@@ -625,38 +625,6 @@ void Pluginx64::CreateJSONLocalWorkshopInfos(std::string jsonFileName, std::stri
 	JSONFile.close();
 }
 
-void Pluginx64::CreateUnzipBatchFile(std::string destinationPath, std::string zipFilePath)
-{
-	std::string filename = BakkesmodPath + "data\\WorkshopMapLoader\\temp\\unzip.bat";
-	std::ofstream BatFile(filename);
-
-	std::string Correct_File_Path = replace(destinationPath, *"/", *"\\");
-	std::string Correct_ZIPFile_Path = replace(zipFilePath, *"/", *"\\");
-
-	BatFile << "@echo off\n";
-	BatFile << "setlocal\n";
-	BatFile << "cd /d %~dp0\n";
-	BatFile << "Call :UnZipFile \"" + Correct_File_Path + "\" \"" + Correct_ZIPFile_Path + "\"\n";
-	BatFile << "exit /b\n";
-	BatFile << "\n";
-	BatFile << ":UnZipFile <ExtractTo> <newzipfile>\n";
-	BatFile << "set vbs=\" % temp % \_.vbs\"\n";
-	BatFile << "if exist %vbs% del /f /q %vbs%\n";
-	BatFile << ">%vbs%  echo Set fso = CreateObject(\"Scripting.FileSystemObject\")\n";
-	BatFile << ">>%vbs% echo If NOT fso.FolderExists(%1) Then\n";
-	BatFile << ">>%vbs% echo fso.CreateFolder(%1)\n";
-	BatFile << ">>%vbs% echo End If\n";
-	BatFile << ">>%vbs% echo set objShell = CreateObject(\"Shell.Application\")\n";
-	BatFile << ">>%vbs% echo set FilesInZip=objShell.NameSpace(%2).items\n";
-	BatFile << ">>%vbs% echo objShell.NameSpace(%1).CopyHere(FilesInZip)\n";
-	BatFile << ">>%vbs% echo Set fso = Nothing\n";
-	BatFile << ">>%vbs% echo Set objShell = Nothing\n";
-	BatFile << "cscript //nologo %vbs%\n";
-	BatFile << "if exist %vbs% del /f /q %vbs%\n";
-
-	BatFile.close();
-	system(filename.c_str());
-}
 
 
 //rocketleaguemaps.us
@@ -941,27 +909,12 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 		Sleep(500);
 	}
 
-	// FIX: CppZip is the new default — pure C++ extraction using only zlib (no minizip needed).
-	// No shell, no VBScript, no Powershell. Works on Windows and Wine/Proton identically.
-	// Bat and Powershell remain available as legacy fallbacks.
-	if (unzipMethod == "CppZip")
-	{
-		cvarManager->log("Extracting via CppZip (pure zlib)...");
-		bool ok = ExtractZipCpp(Folder_Path, Workshop_Dl_Path);
-		if (ok)
-			cvarManager->log("CppZip extraction succeeded.");
-		else
-			cvarManager->log("CppZip extraction failed - zip may be corrupt or path issue.");
-	}
-	else if (unzipMethod == "Bat")
-	{
-		CreateUnzipBatchFile(Workshop_Dl_Path, Folder_Path);
-	}
+	cvarManager->log("Extracting via CppZip (zlib)...");
+	bool ok = ExtractZipCpp(Folder_Path, Workshop_Dl_Path);
+	if (ok)
+		cvarManager->log("CppZip extraction succeeded.");
 	else
-	{
-		std::string extractCommand = "powershell.exe Expand-Archive -LiteralPath '" + Folder_Path + "' -DestinationPath '" + Workshop_Dl_Path + "'";
-		system(extractCommand.c_str());
-	}
+		cvarManager->log("CppZip extraction failed - zip may be corrupt or path issue.");
 
 	int checkTime = 0;
 	while (UdkInDirectory(Workshop_Dl_Path) == "Null")
@@ -1019,25 +972,12 @@ void Pluginx64::DownloadWorkshopTextures()
 		}
 	}
 
-	// FIX: Use CppZip for textures too
-	if (unzipMethod == "CppZip")
-	{
-		cvarManager->log("Extracting textures via CppZip...");
-		bool ok = ExtractZipCpp(ZipFilePath, RLCookedPCConsole_Path.string());
-		if (ok)
-			cvarManager->log("Texture extraction succeeded.");
-		else
-			cvarManager->log("Texture extraction failed.");
-	}
-	else if (unzipMethod == "Bat")
-	{
-		CreateUnzipBatchFile(RLCookedPCConsole_Path.string(), ZipFilePath);
-	}
+	cvarManager->log("Extracting textures via CppZip...");
+	bool ok = ExtractZipCpp(ZipFilePath, RLCookedPCConsole_Path.string());
+	if (ok)
+		cvarManager->log("Texture extraction succeeded.");
 	else
-	{
-		std::string extractCommand = "powershell.exe Expand-Archive -LiteralPath '" + ZipFilePath + "' -DestinationPath '" + RLCookedPCConsole_Path.string() + "'";
-		system(extractCommand.c_str());
-	}
+		cvarManager->log("Texture extraction failed.");
 
 	cvarManager->log("File Extracted");
 }
@@ -1179,7 +1119,6 @@ void Pluginx64::SaveInCFG()
 
 	CFGFile << "MapsFolderPath = \"" + std::string(MapsFolderPathBuf) + "\"\n";
 	CFGFile << "Language = \"" + std::to_string(FR) + "\"\n";
-	CFGFile << "UnzipMethod = \"" + unzipMethod + "\"\n";
 	CFGFile << "HasSeeNewUpdateAlert = \"" + std::to_string(HasSeeNewUpdateAlert) + "\"\n";
 	CFGFile << "dontask = \"" + std::to_string(dontAsk) + "\"\n";
 	CFGFile << "MapsDisplayMode = \"" + std::to_string(MapsDisplayMode) + "\"\n";
