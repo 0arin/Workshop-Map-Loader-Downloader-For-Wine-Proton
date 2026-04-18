@@ -1,1 +1,40 @@
+name: Build WorkshopMapLoader DLL
 
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Clone BakkesMod SDK
+        run: |
+          git clone https://github.com/bakkesmodorg/BakkesModSDK.git bakkesmodsdk
+        shell: pwsh
+
+      - name: Write SDK path to registry
+        run: |
+          $sdkPath = "${{ github.workspace }}\"
+          New-Item -Path "HKCU:\Software\BakkesMod\AppPath" -Force
+          Set-ItemProperty -Path "HKCU:\Software\BakkesMod\AppPath" -Name "BakkesModPath" -Value $sdkPath -Force
+        shell: pwsh
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Release x64
+        run: |
+          msbuild Pluginx64/WorkshopMapLoader.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PostBuildEventUseInBuild=false
+        shell: pwsh
+
+      - name: Upload DLL artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WorkshopMapLoader
+          path: x64/Release/WorkshopMapLoader.dll
