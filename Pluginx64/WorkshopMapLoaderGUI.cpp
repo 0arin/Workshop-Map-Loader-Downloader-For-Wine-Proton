@@ -1271,7 +1271,21 @@ void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char ma
 
 			if (mapResult.isImageLoaded == true && mapResult.Image != nullptr)
 			{
-				drawList->AddImage((ImTextureID)mapResult.Image, ImageP_Min, ImageP_Max);
+				// Cast SRV pointer to ImTextureID — correct for DX11 imgui backend.
+				drawList->AddImage((ImTextureID)(intptr_t)mapResult.Image, ImageP_Min, ImageP_Max);
+			}
+			else
+			{
+				// Show a loading/pending placeholder while the image is downloading
+				// or waiting to be uploaded to the GPU on the next render tick.
+				drawList->AddRectFilled(ImageP_Min, ImageP_Max, ImColor(22, 40, 65, 220));
+				const char* statusText = mapResult.IsDownloadingPreview ? "Loading..." : "No Preview";
+				ImVec2 textSize = ImGui::CalcTextSize(statusText);
+				ImVec2 textPos = ImVec2(
+					ImageP_Min.x + ((ImageP_Max.x - ImageP_Min.x) - textSize.x) * 0.5f,
+					ImageP_Min.y + ((ImageP_Max.y - ImageP_Min.y) - textSize.y) * 0.5f
+				);
+				drawList->AddText(textPos, ImColor(140, 160, 190, 255), statusText);
 			}
 
 			std::string GoodMapName = mapName;
