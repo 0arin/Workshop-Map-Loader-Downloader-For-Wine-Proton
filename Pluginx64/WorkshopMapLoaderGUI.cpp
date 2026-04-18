@@ -138,43 +138,6 @@ void Pluginx64::Render()
 	{
 		if (ImGui::BeginMenu(SettingsText.c_str()))
 		{
-			if (ImGui::BeginMenu(ExtractMethodText.c_str()))
-			{
-				if (ImGui::Selectable("Batch File Method"))
-				{
-					unzipMethod = "Bat";
-
-					if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
-					{
-						SaveInCFG();
-					}
-				}
-
-				if (unzipMethod == "Bat")
-				{
-					ImGui::SameLine();
-					ImGui::Text(" : Selected");
-				}
-
-				if (ImGui::Selectable("Powershell Method"))
-				{
-					unzipMethod = "Powershell";
-
-					if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\"))
-					{
-						SaveInCFG();
-					}
-				}
-
-				if (unzipMethod == "Powershell")
-				{
-					ImGui::SameLine();
-					ImGui::Text(" : Selected");
-				}
-
-				ImGui::EndMenu();
-			}
-
 			if (ImGui::BeginMenu(LanguageText.c_str()))
 			{
 				if (ImGui::Selectable("French"))
@@ -1453,17 +1416,12 @@ void Pluginx64::renderExtractMapFilesPopup(Map curMap)
 
 
 		CenterNexIMGUItItem(326.f);
-		if (ImGui::Button("Powershell", ImVec2(100.f, 25.f)))
+		if (ImGui::Button("Extract", ImVec2(216.f, 25.f)))
 		{
 			ImGui::CloseCurrentPopup();
-			std::string extractCommand = "powershell.exe Expand-Archive -LiteralPath '" + curMap.ZipFile.string() + "' -DestinationPath '" + curMap.Folder.string() + "/'";
-			system(extractCommand.c_str());
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Batch File", ImVec2(100.f, 25.f)))
-		{
-			ImGui::CloseCurrentPopup();
-			CreateUnzipBatchFile(curMap.Folder.string() + "/", curMap.ZipFile.string());
+			bool ok = ExtractZipCpp(curMap.ZipFile.string(), curMap.Folder.string() + "/");
+			if (ok) cvarManager->log("CppZip extraction succeeded.");
+			else    cvarManager->log("CppZip extraction failed.");
 		}
 		ImGui::SameLine();
 		if (ImGui::Button(EMFStillDoesntWorkText.c_str(), ImVec2(110.f, 25.f)))
