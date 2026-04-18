@@ -134,7 +134,7 @@ public:
 	std::string MapsFolderPath;
 	std::string PluginVersion = "1.15.3";
 	static bool FR;
-	std::string unzipMethod = "Bat";
+	// unzipMethod removed — CppZip (zlib) is the only extraction method
 	bool HasSeeNewUpdateAlert;
 	int dontAsk = 0;
 	bool DownloadTexturesBool = false;
@@ -179,7 +179,7 @@ public:
 
 
 	//Related to download
-	void CreateUnzipBatchFile(std::string destinationPath, std::string zipFilePath);
+
 	void CreateJSONLocalWorkshopInfos(std::string jsonFileName, std::string workshopMapPath, std::string mapTitle, std::string mapAuthor, std::string mapDescription, std::string mapPreviewUrl);
 	bool IsRetrievingWorkshopFiles = false;
 	bool DownloadFailed = false;
