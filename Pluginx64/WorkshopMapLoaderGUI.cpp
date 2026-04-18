@@ -9,37 +9,38 @@ int RLMAPS_SearchWorkshopDisplayed = 0;
 float heightMutators = 35.f;
 float heightHostGamePopup = 194.f;
 
-// PERF: Removed dead global ImGui calls that ran at DLL load time before any
-// ImGui context existed. windowSizeXBefore/Y were never used.
+// PERF: Removed dead global ImGui calls...
 
 void Pluginx64::Render()
 {
     // Upload pending preview textures on the render thread
-    // This is required for smooth performance especially on Wine/Proton
+    // This fixes freezing/low FPS on Wine/Proton
     for (auto& result : RLMAPS_MapResultList)
     {
         if (result.Image == nullptr && !result.RawImageBytes.empty())
         {
+            // LoadTextureFromMemory is declared in WorkshopMapLoader.h / .cpp
             result.Image = LoadTextureFromMemory(result.RawImageBytes);
             result.RawImageBytes.clear();
             result.RawImageBytes.shrink_to_fit();
         }
     }
 
-    // PERF: Guard controller check so XInputGetState (expensive under Wine) is
-    // only called when the feature is actually enabled.
+    // The rest of your original Render() code stays exactly the same from here:
     if (UseController)
         checkOpenMenuWithController(CanvasWrapper(0));
 
-    // PERF: Removed dead clipboard block. OpenClipboard/GetClipboardData crossed
-    // the Win32<->X11 boundary every frame under Wine, and the result was never used.
     ImGui::SetNextWindowSizeConstraints(ImVec2(1326.f, 690.f), ImVec2(1920.f, 1080.f));
     if (!ImGui::Begin(menuTitle_.c_str(), &isWindowOpen_, ImGuiWindowFlags_MenuBar))
     {
-        // Early out if the window is collapsed, as an optimization.
         ImGui::End();
         return;
     }
+
+    // ... [ALL your original code from Gamepad controller1 = ... down to the end of Render()]
+    // (including all tabs, menus, renderMaps, etc.)
+    // Do NOT paste the two RLMAPS_ functions again here.
+}
 
     Gamepad controller1 = Gamepad(1);
     controller1.Update();
@@ -252,16 +253,10 @@ void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char ma
             drawList->AddRectFilled(TopCornerLeft, RectFilled_p_max, ImColor(44, 75, 113, 255), 5.f, 15);
             drawList->AddRect(ImageP_Min, ImageP_Max, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
 
-            // Safe thumbnail rendering (prevents crash / freeze if image not ready)
-            if (mapResult.isImageLoaded == true)
+            // Safe thumbnail rendering for Wine/Proton
+            if (mapResult.isImageLoaded == true && mapResult.Image != nullptr)
             {
-                if (mapResult.Image != nullptr)
-                {
-                    if (mapResult.Image->GetImGuiTex())
-                    {
-                        drawList->AddImage(mapResult.Image->GetImGuiTex(), ImageP_Min, ImageP_Max);
-                    }
-                }
+                drawList->AddImage((ImTextureID)mapResult.Image, ImageP_Min, ImageP_Max);
             }
 
             std::string GoodMapName = mapName;
