@@ -600,17 +600,9 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 {
 	RLMAPS_Searching = true;
 
-	// Release any existing D3D11 SRV textures before clearing the list
+	// Clear the list - ImageWrapper handles its own cleanup via shared_ptr
 	{
 		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-		for (auto& result : RLMAPS_MapResultList)
-		{
-			if (result.Image)
-			{
-				result.Image->Release();
-				result.Image = nullptr;
-			}
-		}
 		RLMAPS_MapResultList.clear();
 	}
 	RLMAPS_PageSelected = IndexPage;
@@ -755,16 +747,11 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	}
 	else
 	{
+		// Image already cached on disk - load via ImageWrapper, same as local maps
 		result.ImagePath = resultImagePath;
+		result.Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
+		result.isImageLoaded = true;
 		result.IsDownloadingPreview = false;
-
-		std::ifstream f(resultImagePath, std::ios::binary);
-		if (f)
-		{
-			result.RawImageBytes.assign(
-				std::istreambuf_iterator<char>(f),
-				std::istreambuf_iterator<char>());
-		}
 
 		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 		RLMAPS_MapResultList.push_back(result);
@@ -1231,38 +1218,33 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
-			// Ensure parent directory exists (safety net in case onLoad creation failed).
+			// Ensure parent directory exists
 			try { fs::create_directories(fs::path(File_Path).parent_path()); }
 			catch (...) {}
 
-			// Write image to disk for caching. If disk write fails we still store the
-			// raw bytes in memory so the image renders for this session.
+			// Write image to disk
 			std::ofstream imgFile(File_Path, std::ios_base::binary);
-			if (imgFile)
+			if (!imgFile)
 			{
-				imgFile.write(data, size);
-				imgFile.close();
-				cvarManager->log("PREVIEW SAVED : " + File_Path);
+				cvarManager->log("PREVIEW SAVE FAILED: " + File_Path);
+				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
+				return;
 			}
-			else
-			{
-				cvarManager->log("PREVIEW SAVE FAILED (will render from memory): " + File_Path);
-				// Do NOT return — fall through to store RawImageBytes so the image
-				// still shows in the browse tab for this session.
-			}
+			imgFile.write(data, size);
+			imgFile.close();
+			cvarManager->log("PREVIEW SAVED: " + File_Path);
 
-			// Store raw bytes — render thread picks them up in Render() and calls
-			// LoadTextureFromMemory() to upload to GPU. No gameWrapper->Execute needed.
-			std::string mapName;
+			// Load via ImageWrapper, exactly like local maps do
+			gameWrapper->Execute([this, File_Path, mapResultIndex](GameWrapper* gw)
 			{
 				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-				RLMAPS_MapResultList[mapResultIndex].RawImageBytes.assign(data, data + size);
+				RLMAPS_MapResultList[mapResultIndex].Image = std::make_shared<ImageWrapper>(File_Path, false, true);
 				RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
+				RLMAPS_MapResultList[mapResultIndex].isImageLoaded = true;
 				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
-				mapName = RLMAPS_MapResultList[mapResultIndex].Name;
-			}
-
-			cvarManager->log("Preview bytes ready for GPU upload: " + mapName);
+				cvarManager->log("Preview loaded via ImageWrapper: " + File_Path);
+			});
 		});
 
 }
@@ -1584,13 +1566,6 @@ void Pluginx64::ApplyLanguage()
 
 void Pluginx64::onUnload()
 {
-	// Release all D3D11 SRV textures to avoid GPU memory leaks
-	for (auto& result : RLMAPS_MapResultList)
-	{
-		if (result.Image)
-		{
-			result.Image->Release();
-			result.Image = nullptr;
-		}
-	}
+	// ImageWrapper shared_ptrs clean up automatically
+	RLMAPS_MapResultList.clear();
 }
