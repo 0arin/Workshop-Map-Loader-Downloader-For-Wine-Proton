@@ -21,24 +21,6 @@ float heightHostGamePopup = 194.f;
 
 void Pluginx64::Render()
 {
-	// Upload any pending preview textures on the render thread.
-	// Background threads store raw image bytes in RawImageBytes; we decode and
-	// upload here where the D3D11 device context is guaranteed to be current.
-	{
-		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-		for (auto& result : RLMAPS_MapResultList)
-		{
-			if (result.Image == nullptr && !result.RawImageBytes.empty())
-			{
-				result.Image = LoadTextureFromMemory(result.RawImageBytes);
-				result.RawImageBytes.clear();
-				result.RawImageBytes.shrink_to_fit();
-				if (result.Image != nullptr)
-					result.isImageLoaded = true;
-			}
-		}
-	}
-
 	// PERF: Guard controller check so XInputGetState (expensive under Wine) is
 	// only called when the feature is actually enabled.
 	if (UseController)
@@ -1269,15 +1251,13 @@ void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char ma
 			drawList->AddRectFilled(TopCornerLeft, RectFilled_p_max, ImColor(44, 75, 113, 255), 5.f, 15);
 			drawList->AddRect(ImageP_Min, ImageP_Max, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
 
-			if (mapResult.isImageLoaded == true && mapResult.Image != nullptr)
+			// Use ImageWrapper::GetImGuiTex() — identical to how local maps render previews
+			if (mapResult.isImageLoaded && mapResult.Image != nullptr && mapResult.Image->GetImGuiTex())
 			{
-				// Cast SRV pointer to ImTextureID — correct for DX11 imgui backend.
-				drawList->AddImage((ImTextureID)(intptr_t)mapResult.Image, ImageP_Min, ImageP_Max);
+				drawList->AddImage(mapResult.Image->GetImGuiTex(), ImageP_Min, ImageP_Max);
 			}
 			else
 			{
-				// Show a loading/pending placeholder while the image is downloading
-				// or waiting to be uploaded to the GPU on the next render tick.
 				drawList->AddRectFilled(ImageP_Min, ImageP_Max, ImColor(22, 40, 65, 220));
 				const char* statusText = mapResult.IsDownloadingPreview ? "Loading..." : "No Preview";
 				ImVec2 textSize = ImGui::CalcTextSize(statusText);
