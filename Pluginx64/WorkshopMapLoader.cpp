@@ -2,8 +2,8 @@
 #include "WorkshopMapLoader.h"
 #include "IMGUI/imgui_impl_dx11.h"
 
-// minizip headers - part of zlib/contrib, available via vcpkg zlib package
-#include <contrib/minizip/unzip.h>
+// zlib is already linked via pch. No extra headers needed for ZIP extraction.
+#include <zlib.h>
 
 
 BAKKESMOD_PLUGIN(Pluginx64, "Workshop Map Loader & Downloader", "1.15.3", 0)
@@ -122,99 +122,148 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 
 
 // ---------------------------------------------------------------------------
-// ExtractZipCpp — pure C++ zip extraction via minizip (part of zlib).
-// Works identically on Windows and Wine/Proton with zero shell involvement.
+// ExtractZipCpp — pure C++ ZIP extraction using only zlib (already linked).
+// Parses the ZIP local file headers directly, decompresses with zlib inflate.
+// No minizip, no shell, no VBScript. Works on Windows and Wine/Proton identically.
 // Returns true on success, false on any error.
 // ---------------------------------------------------------------------------
 bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
 {
-	unzFile zf = unzOpen(zipFilePath.c_str());
-	if (!zf)
-		return false;
+	FILE* zf = fopen(zipFilePath.c_str(), "rb");
+	if (!zf) return false;
 
+	// Ensure dest dir exists
 	try { fs::create_directories(fs::path(destDir)); }
-	catch (...) { unzClose(zf); return false; }
+	catch (...) { fclose(zf); return false; }
 
-	unz_global_info globalInfo;
-	if (unzGetGlobalInfo(zf, &globalInfo) != UNZ_OK)
-	{
-		unzClose(zf);
-		return false;
-	}
+	// ZIP local file header signature
+	static const uint32_t LOCAL_SIG = 0x04034b50;
+	// ZIP data descriptor signature
+	static const uint32_t DATA_DESC_SIG = 0x08074b50;
 
-	const size_t BUFFER_SIZE = 65536;
-	std::vector<char> buffer(BUFFER_SIZE);
+	const size_t BUF = 65536;
+	std::vector<Bytef> inBuf(BUF), outBuf(BUF);
 	bool success = true;
 
-	for (uLong i = 0; i < globalInfo.number_entry; ++i)
+	while (success)
 	{
-		unz_file_info fileInfo;
-		char entryName[512];
+		uint32_t sig = 0;
+		if (fread(&sig, 4, 1, zf) != 1) break; // EOF or end of entries
 
-		if (unzGetCurrentFileInfo(zf, &fileInfo, entryName, sizeof(entryName),
-			nullptr, 0, nullptr, 0) != UNZ_OK)
-		{
-			success = false;
-			break;
-		}
+		if (sig != LOCAL_SIG) break; // hit central directory or end
 
-		std::string entryNameStr(entryName);
-		std::replace(entryNameStr.begin(), entryNameStr.end(), '\\', '/');
+		// Local file header (after signature)
+		uint16_t version, flags, method, modTime, modDate;
+		uint32_t crc32val, compSize, uncompSize;
+		uint16_t nameLen, extraLen;
+
+		fread(&version,    2, 1, zf);
+		fread(&flags,      2, 1, zf);
+		fread(&method,     2, 1, zf);
+		fread(&modTime,    2, 1, zf);
+		fread(&modDate,    2, 1, zf);
+		fread(&crc32val,   4, 1, zf);
+		fread(&compSize,   4, 1, zf);
+		fread(&uncompSize, 4, 1, zf);
+		fread(&nameLen,    2, 1, zf);
+		fread(&extraLen,   2, 1, zf);
+
+		// Entry name
+		std::string entryName(nameLen, '\0');
+		fread(&entryName[0], 1, nameLen, zf);
+		fseek(zf, extraLen, SEEK_CUR); // skip extra field
+
+		// Normalize path separators
+		std::replace(entryName.begin(), entryName.end(), '\\', '/');
 
 		std::string destPath = destDir;
-		if (destPath.back() != '/' && destPath.back() != '\\')
-			destPath += '/';
-		destPath += entryNameStr;
+		if (destPath.back() != '/' && destPath.back() != '\\') destPath += '/';
+		destPath += entryName;
 
-		if (!entryNameStr.empty() && entryNameStr.back() == '/')
+		bool isDir = (!entryName.empty() && entryName.back() == '/');
+
+		if (isDir)
 		{
 			try { fs::create_directories(fs::path(destPath)); }
 			catch (...) {}
+			continue;
+		}
+
+		// Create parent dirs
+		try { fs::create_directories(fs::path(destPath).parent_path()); }
+		catch (...) {}
+
+		// Data descriptor flag (sizes may be zero in header, follow data)
+		bool hasDataDesc = (flags & 0x0008) != 0;
+
+		if (method == 0) // stored (no compression)
+		{
+			std::ofstream out(destPath, std::ios::binary);
+			if (!out) { success = false; break; }
+			uint32_t remaining = compSize;
+			while (remaining > 0)
+			{
+				size_t toRead = (size_t)std::min((uint32_t)BUF, remaining);
+				size_t got = fread(inBuf.data(), 1, toRead, zf);
+				if (got == 0) { success = false; break; }
+				out.write((char*)inBuf.data(), got);
+				remaining -= (uint32_t)got;
+			}
+		}
+		else if (method == 8) // deflate
+		{
+			std::ofstream out(destPath, std::ios::binary);
+			if (!out) { success = false; break; }
+
+			z_stream strm = {};
+			if (inflateInit2(&strm, -MAX_WBITS) != Z_OK) { success = false; break; }
+
+			uint32_t remaining = compSize;
+			int zret = Z_OK;
+			while (remaining > 0 && zret != Z_STREAM_END)
+			{
+				size_t toRead = (size_t)std::min((uint32_t)BUF, remaining);
+				size_t got = fread(inBuf.data(), 1, toRead, zf);
+				if (got == 0) break;
+				remaining -= (uint32_t)got;
+
+				strm.avail_in = (uInt)got;
+				strm.next_in  = inBuf.data();
+
+				do {
+					strm.avail_out = (uInt)BUF;
+					strm.next_out  = outBuf.data();
+					zret = inflate(&strm, Z_NO_FLUSH);
+					if (zret == Z_STREAM_ERROR || zret == Z_DATA_ERROR || zret == Z_MEM_ERROR)
+					{
+						success = false; break;
+					}
+					size_t produced = BUF - strm.avail_out;
+					out.write((char*)outBuf.data(), produced);
+				} while (strm.avail_out == 0);
+
+				if (!success) break;
+			}
+			inflateEnd(&strm);
 		}
 		else
 		{
-			try { fs::create_directories(fs::path(destPath).parent_path()); }
-			catch (...) {}
-
-			if (unzOpenCurrentFile(zf) != UNZ_OK)
-			{
-				success = false;
-				break;
-			}
-
-			std::ofstream outFile(destPath, std::ios_base::binary);
-			if (!outFile)
-			{
-				unzCloseCurrentFile(zf);
-				success = false;
-				break;
-			}
-
-			int readBytes;
-			while ((readBytes = unzReadCurrentFile(zf, buffer.data(), (unsigned)BUFFER_SIZE)) > 0)
-				outFile.write(buffer.data(), readBytes);
-
-			outFile.close();
-			unzCloseCurrentFile(zf);
-
-			if (readBytes < 0)
-			{
-				success = false;
-				break;
-			}
+			// Unsupported compression method - skip
+			if (!hasDataDesc && compSize > 0)
+				fseek(zf, (long)compSize, SEEK_CUR);
 		}
 
-		if (i + 1 < globalInfo.number_entry)
+		// Skip data descriptor if present
+		if (hasDataDesc)
 		{
-			if (unzGoToNextFile(zf) != UNZ_OK)
-			{
-				success = false;
-				break;
-			}
+			uint32_t peek;
+			fread(&peek, 4, 1, zf);
+			if (peek != DATA_DESC_SIG) fseek(zf, -4, SEEK_CUR);
+			fseek(zf, 12, SEEK_CUR); // crc32 + comp + uncomp sizes
 		}
 	}
 
-	unzClose(zf);
+	fclose(zf);
 	return success;
 }
 
@@ -745,12 +794,24 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	}
 	else
 	{
+		// Image already cached on disk. Push to list first, then load on render thread.
 		result.ImagePath = resultImagePath;
-		result.Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
-		result.isImageLoaded = true;
 		result.IsDownloadingPreview = false;
-		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-		RLMAPS_MapResultList.push_back(result);
+
+		int listIndex;
+		{
+			std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+			RLMAPS_MapResultList.push_back(result);
+			listIndex = (int)RLMAPS_MapResultList.size() - 1;
+		}
+
+		// ImageWrapper creates a D3D11 texture — must be on the render thread under Wine/Proton.
+		gameWrapper->Execute([this, resultImagePath, listIndex](GameWrapper* gw)
+		{
+			std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+			RLMAPS_MapResultList[listIndex].Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
+			RLMAPS_MapResultList[listIndex].isImageLoaded = true;
+		});
 	}
 }
 
@@ -880,12 +941,12 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 		Sleep(500);
 	}
 
-	// FIX: CppZip is the new default — pure C++ extraction via minizip.
+	// FIX: CppZip is the new default — pure C++ extraction using only zlib (no minizip needed).
 	// No shell, no VBScript, no Powershell. Works on Windows and Wine/Proton identically.
 	// Bat and Powershell remain available as legacy fallbacks.
 	if (unzipMethod == "CppZip")
 	{
-		cvarManager->log("Extracting via CppZip (minizip)...");
+		cvarManager->log("Extracting via CppZip (pure zlib)...");
 		bool ok = ExtractZipCpp(Folder_Path, Workshop_Dl_Path);
 		if (ok)
 			cvarManager->log("CppZip extraction succeeded.");
