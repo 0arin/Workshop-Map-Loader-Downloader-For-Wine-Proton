@@ -203,7 +203,7 @@ bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
 			uint32_t remaining = compSize;
 			while (remaining > 0)
 			{
-				size_t toRead = (size_t)std::min((uint32_t)BUF, remaining);
+				size_t toRead = (size_t)(std::min)((uint32_t)BUF, remaining);
 				size_t got = fread(inBuf.data(), 1, toRead, zf);
 				if (got == 0) { success = false; break; }
 				out.write((char*)inBuf.data(), got);
@@ -222,7 +222,7 @@ bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
 			int zret = Z_OK;
 			while (remaining > 0 && zret != Z_STREAM_END)
 			{
-				size_t toRead = (size_t)std::min((uint32_t)BUF, remaining);
+				size_t toRead = (size_t)(std::min)((uint32_t)BUF, remaining);
 				size_t got = fread(inBuf.data(), 1, toRead, zf);
 				if (got == 0) break;
 				remaining -= (uint32_t)got;
