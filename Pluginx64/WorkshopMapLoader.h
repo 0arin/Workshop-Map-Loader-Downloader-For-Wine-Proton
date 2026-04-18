@@ -13,6 +13,9 @@
 // Must be called on the render thread. Returns nullptr on failure.
 ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data);
 
+// Pure zlib ZIP extraction — the only extraction method used by this plugin.
+bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir);
+
 
 struct Map
 {
