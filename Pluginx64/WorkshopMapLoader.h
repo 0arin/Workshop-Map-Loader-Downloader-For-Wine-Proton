@@ -109,6 +109,18 @@ public:
 	int Download_Textrures_Progress;
 	int DownloadTextrures_ProgressDisplayed;
 
+	// PERF: Cached result of CheckExist_TexturesFiles() — recomputed only on open
+	// and after texture download, not every frame.
+	std::vector<std::string> cachedMissingTextures;
+	bool missingTexturesCacheDirty = true;
+
+	// PERF: Cached result of path validity check — recomputed only when the input changes.
+	bool cachedPathIsValid = false;
+	char cachedPathForValidation[200] = "";
+
+	// PERF: Cached split map lists — rebuilt only in RefreshMapsFunct, not every frame.
+	std::vector<Map> cachedNoUpkMapList;
+	std::vector<Map> cachedGoodMapList;
 
 	
 
@@ -228,7 +240,7 @@ public:
 	void renderImageButton(ImTextureID user_texture_id, ImVec2 size, std::function<void()> function);
 	void CenterNexIMGUItItem(float itemWidth);
 	void AlignRightNexIMGUItItem(float itemWidth, float borderGap);
-	std::string LimitTextSize(std::string str, float maxTextSize); //� mettre dans utils
+	std::string LimitTextSize(std::string str, float maxTextSize); //à mettre dans utils
 
 	void renderProgressBar(float value, float maxValue, ImVec2 pos, ImVec2 size, ImColor colorBackground, ImColor colorProgress, const char* label);
 
@@ -261,6 +273,8 @@ public:
 	ImVec2 CalcRealTextSize(const char* text, float fontSize);
 	void renderText(const char* text, float fontSize = 13.f);
 
+	// PERF: Language strings are set once via ApplyLanguage() instead of every frame.
+	void ApplyLanguage();
 
 	//////////////////////////////////////////////////////////////////////////////////////////////////////  Text Variables
 
