@@ -676,25 +676,35 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	const Json::Value maps2 = actualJson2;
 
 
+	// Images are always stored as "RLMPreview.jpg" on the master branch of each
+	// project. The package registry URLs in the release assets are 404 (deleted).
+	std::string projectPath = maps[index]["path_with_namespace"].asString();
+	std::string pictureUrl = "https://celab.jetfox.ovh/" + projectPath + "/-/raw/master/RLMPreview.jpg";
+
 	std::vector<RLMAPS_Release> releases;
 	for (int release_index = 0; release_index < maps2.size(); ++release_index)
 	{
 		RLMAPS_Release release;
-		release.name = maps2[release_index]["name"].asString();
-		release.tag_name = maps2[release_index]["tag_name"].asString();
+		release.name        = maps2[release_index]["name"].asString();
+		release.tag_name    = maps2[release_index]["tag_name"].asString();
 		release.description = maps2[release_index]["description"].asString();
-		release.pictureLink = maps2[release_index]["assets"]["links"][0]["url"].asString();
-		release.downloadLink = maps2[release_index]["assets"]["links"][1]["url"].asString();
+		release.pictureLink = pictureUrl;
 
-		std::string zipNameUnsafe = maps2[release_index]["assets"]["links"][1]["name"].asString();
-
-		std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "#", "'", "`"};
-		for (auto special : specials)
+		// Find the download link (non-image asset)
+		const Json::Value& links = maps2[release_index]["assets"]["links"];
+		for (int li = 0; li < (int)links.size(); ++li)
 		{
-			eraseAll(zipNameUnsafe, special);
+			std::string linkType = links[li]["link_type"].asString();
+			if (linkType != "image")
+			{
+				release.downloadLink = links[li]["url"].asString();
+				release.zipName = links[li]["name"].asString();
+				std::string specials[] = { "/", "\\", "?", ":", "*", "\"", "<", ">", "|", "#", "'", "`"};
+				for (auto& s : specials)
+					eraseAll(release.zipName, s);
+				break;
+			}
 		}
-
-		release.zipName = zipNameUnsafe;
 
 		releases.push_back(release);
 	}
@@ -702,7 +712,8 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	result.releases = releases;
 	result.Size = "10000000";
 	result.Author = maps[index]["namespace"]["path"].asString();
-	result.PreviewUrl = releases[0].pictureLink;
+	result.PreviewUrl = pictureUrl;
+
 	result.Image = nullptr;
 	result.isImageLoaded = false;
 
@@ -711,21 +722,39 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	// FIX: Use forward slashes — backslash paths fail silently under Wine/Proton
 	std::filesystem::path resultImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS/" + result.ID + ".jfif";
 
+	if (Directory_Or_File_Exists(resultImagePath))
+	{
+		std::error_code ec;
+		auto fileSize = fs::file_size(resultImagePath, ec);
+		if (ec || fileSize < 1024)
+		{
+			cvarManager->log("Deleting stale/corrupt cache: " + resultImagePath.string());
+			fs::remove(resultImagePath, ec);
+		}
+	}
+
 	if (!Directory_Or_File_Exists(resultImagePath))
 	{
-		result.IsDownloadingPreview = true;
+		if (!result.PreviewUrl.empty())
+		{
+			result.IsDownloadingPreview = true;
 
-		int listIndex;
+			int listIndex;
+			{
+				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+				RLMAPS_MapResultList.push_back(result);
+				listIndex = (int)RLMAPS_MapResultList.size() - 1;
+			}
+			DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), listIndex);
+		}
+		else
 		{
 			std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 			RLMAPS_MapResultList.push_back(result);
-			listIndex = (int)RLMAPS_MapResultList.size() - 1;
 		}
-		DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), listIndex);
 	}
 	else
 	{
-		// Image already on disk — read bytes so the render thread can upload to GPU
 		result.ImagePath = resultImagePath;
 		result.IsDownloadingPreview = false;
 
