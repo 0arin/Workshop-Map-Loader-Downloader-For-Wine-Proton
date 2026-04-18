@@ -17,9 +17,13 @@ namespace
 // Must be called from the render/game thread (D3D11 device context requirement).
 // Returns nullptr on any failure.
 // ---------------------------------------------------------------------------
-static ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
+ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
 {
 	if (data.empty()) return nullptr;
+
+	// WIC requires COM to be initialised on the calling thread.
+	// CoInitializeEx is a no-op if already initialised, so this is safe.
+	CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
 	IWICImagingFactory* wicFactory = nullptr;
 	HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
@@ -59,7 +63,7 @@ static ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigne
 	UINT width = 0, height = 0;
 	converter->GetSize(&width, &height);
 	std::vector<BYTE> pixels(width * height * 4);
-	hr = converter->CopyPixels(nullptr, width * 4, (UINT)pixels.size(), pixels.data());
+	hr = converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(pixels.size()), pixels.data());
 	converter->Release();
 	wicFactory->Release();
 	if (FAILED(hr)) return nullptr;
@@ -99,6 +103,7 @@ static ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigne
 }
 
 
+
 std::string GameSetting::GetSelectedValue()
 {
 	return Values[selectedValue];
@@ -107,12 +112,18 @@ std::string GameSetting::GetSelectedValue()
 
 void Pluginx64::onLoad()
 {
+	// REMOVED: gameWrapper->RegisterDrawable(...)
+	// Controller open/close check now runs inside Render() via PluginWindow,
+	// which is the correct path and does not block the game render thread.
+
 	BakkesmodPath = gameWrapper->GetBakkesModPath().string() + "\\";
+	// FIX: Forward slashes for Wine/Proton compatibility
 	IfNoPreviewImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/NoPreview.jpg";
 
 	std::string RLWin64_Path = std::filesystem::current_path().string();
 	RLCookedPCConsole_Path = RLWin64_Path.substr(0, RLWin64_Path.length() - 14) + "TAGame\\CookedPCConsole";
 
+	// FIX: Forward slashes for Wine/Proton compatibility
 	std::string Data_WorkshopMapLoader_Path = BakkesmodPath + "data/WorkshopMapLoader/";
 
 	//Load logos
@@ -155,17 +166,17 @@ void Pluginx64::onLoad()
 			EnableAntiFreezeFix = (CFGVariablesList.at(11) == "1");
 		}
 
-		if (CFGVariablesList.size() >= 11)
+		if (CFGVariablesList.size() >= 11) //the user has the new version
 		{
 			HasSeeNewUpdateAlert = (PluginVersion == CFGVariablesList.at(9));
 		}
-		else
+		else  //the user has the old version
 		{
 			HasSeeNewUpdateAlert = false;
 		}
 
 
-		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf));
+		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf)); //Make  MapsFolderPathBuf = MapsFolderPath
 	}
 	else
 	{
@@ -177,7 +188,7 @@ void Pluginx64::onLoad()
 			{
 				fs::create_directory(RLCookedPCConsole_Path.string() + "\\mods");
 			}
-			catch (const std::exception& ex)
+			catch (const std::exception& ex) //manage errors when trying to create a folder in an administrator folder
 			{
 				cvarManager->log(ex.what());
 			}
@@ -195,10 +206,11 @@ void Pluginx64::onLoad()
 		PluginVersion = "1.15.2";
 		EnableAntiFreezeFix = false;
 
-		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf));
+		strncpy(MapsFolderPathBuf, MapsFolderPath.c_str(), IM_ARRAYSIZE(MapsFolderPathBuf)); //Make  MapsFolderPathBuf = MapsFolderPath
 		SaveInCFG();
 	}
 
+	// PERF: Apply language strings once on load instead of every frame in Render()
 	ApplyLanguage();
 }
 
@@ -255,6 +267,7 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 		myfile.close();
 	}
 
+	//Parse response json
 	Json::Value actualJson;
 	Json::Reader reader;
 
@@ -264,9 +277,9 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 	std::string MapDescription = actualJson["Description"].asString();
 	std::string MapAuthor = actualJson["Author"].asString();
 
-	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end());
-	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end());
-	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end());
+	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end()); //remove newlines
+	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end()); //remove newlines
+	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end()); //remove newlines
 
 	Infos.push_back(MapTitle);
 	Infos.push_back(MapDescription);
@@ -301,10 +314,11 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		map.Folder = MapsDirectories.at(i).string();
 
 
-		renameFileToUPK(CurrentMapDirectory);
+		renameFileToUPK(CurrentMapDirectory);		//rename the map udk to upk, for people that already had the plugin
 
 
 		int nbFilesInDirectory = 0;
+		//get the numbers of files in the current map directory
 		for (const auto& file : fs::directory_iterator(CurrentMapDirectory))
 		{
 			nbFilesInDirectory++;
@@ -409,6 +423,7 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		cvarManager->log("");
 	}
 
+	// PERF: Rebuild cached split lists so Render() doesn't do it every frame
 	cachedNoUpkMapList.clear();
 	cachedGoodMapList.clear();
 	for (auto& map : MapList)
@@ -545,7 +560,7 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 {
 	RLMAPS_Searching = true;
 
-	// Release any existing SRV textures before clearing the list
+	// Release any existing D3D11 SRV textures before clearing the list
 	for (auto& result : RLMAPS_MapResultList)
 	{
 		if (result.Image)
@@ -555,7 +570,6 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 		}
 	}
 	RLMAPS_MapResultList.clear();
-
 	RLMAPS_PageSelected = IndexPage;
 	if (IndexPage == 1)
 	{
@@ -567,6 +581,7 @@ void Pluginx64::GetResults(std::string keyWord, int IndexPage)
 
 	cpr::Response Request_MapInfos = cpr::Get(cpr::Url{ rlmaps_url + keyWord + "&page=" + std::to_string(IndexPage) });
 	
+	//Parse response json
 	Json::Value actualJson;
 	Json::Reader reader;
 
@@ -640,24 +655,26 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 
 	cvarManager->log("Map : " + result.Name);
 
+	// FIX: Use forward slashes — backslash paths fail silently under Wine/Proton
 	std::filesystem::path resultImagePath = BakkesmodPath + "data/WorkshopMapLoader/Search/img/RLMAPS/" + result.ID + ".jfif";
 
 	if (!Directory_Or_File_Exists(resultImagePath))
 	{
 		result.IsDownloadingPreview = true;
+
 		RLMAPS_MapResultList.push_back(result);
 		DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), index);
 	}
 	else
 	{
-		// Image already on disk — load its bytes so the render thread can upload it
+		// Image already on disk — read bytes so the render thread can upload to GPU
 		result.ImagePath = resultImagePath;
 		result.IsDownloadingPreview = false;
 
 		std::ifstream f(resultImagePath, std::ios::binary);
 		if (f)
 		{
-			result.RawImageBytes = std::vector<unsigned char>(
+			result.RawImageBytes.assign(
 				std::istreambuf_iterator<char>(f),
 				std::istreambuf_iterator<char>());
 		}
@@ -1125,7 +1142,7 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
-			// Write the image file to disk
+			// Write image to disk for caching
 			std::ofstream imgFile(File_Path, std::ios_base::binary);
 			if (imgFile)
 			{
@@ -1140,13 +1157,15 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 				return;
 			}
 
-			// Store bytes for render-thread GPU upload (via LoadTextureFromMemory in Render())
+			// Store raw bytes — render thread picks them up in Render() and calls
+			// LoadTextureFromMemory() to upload to GPU. No gameWrapper->Execute needed.
 			RLMAPS_MapResultList[mapResultIndex].RawImageBytes.assign(data, data + size);
 			RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
 			RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
 
 			cvarManager->log("Preview bytes ready for GPU upload: " + RLMAPS_MapResultList[mapResultIndex].Name);
 		});
+
 }
 
 bool Pluginx64::FileIsInDirectoryRecursive(std::string dirPath, std::string filename)
@@ -1466,7 +1485,7 @@ void Pluginx64::ApplyLanguage()
 
 void Pluginx64::onUnload()
 {
-	// Release all SRV textures on unload
+	// Release all D3D11 SRV textures to avoid GPU memory leaks
 	for (auto& result : RLMAPS_MapResultList)
 	{
 		if (result.Image)
