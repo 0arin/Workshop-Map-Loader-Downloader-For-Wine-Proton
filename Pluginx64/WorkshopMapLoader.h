@@ -23,8 +23,9 @@ struct Map
 	std::filesystem::path UpkFile; //Map(.upk) in the map directory
 	std::filesystem::path ZipFile; //Map(.zip) in the map directory
 	std::string JsonFile; //.json file found in the map directory
-	std::shared_ptr<ImageWrapper> PreviewImage;
-	bool isPreviewImageLoaded;
+	ID3D11ShaderResourceView* PreviewImage = nullptr;
+	std::vector<unsigned char> PreviewImageBytes;
+	bool isPreviewImageLoaded = false;
 };
 
 struct RLMAPS_Release
@@ -47,7 +48,8 @@ struct RLMAPS_MapResult
 	std::string Author;
 	std::vector<RLMAPS_Release> releases;
 	std::filesystem::path ImagePath; //Stored in bakkesmodFolder/data/WorkshopMapLoader/Search/img/
-	std::shared_ptr<ImageWrapper> Image; // loaded via ImageWrapper, same as local maps
+	ID3D11ShaderResourceView* Image = nullptr;
+	std::vector<unsigned char> RawImageBytes;
 	bool isImageLoaded = false;
 	bool IsDownloadingPreview = false;
 };
@@ -155,10 +157,11 @@ public:
 	int nbTilesPerLine = 5;
 	float maxTextSize = 160.f;
 	int MapsDisplayMode = 0;
-	std::shared_ptr<ImageWrapper> MapsDisplayMode_Logo1_Image;
-	std::shared_ptr<ImageWrapper> MapsDisplayMode_Logo1_SelectedImage;
-	std::shared_ptr<ImageWrapper> MapsDisplayMode_Logo2_Image;
-	std::shared_ptr<ImageWrapper> MapsDisplayMode_Logo2_SelectedImage;
+	ID3D11ShaderResourceView* logoMode1         = nullptr;
+	ID3D11ShaderResourceView* logoMode1Selected = nullptr;
+	ID3D11ShaderResourceView* logoMode2         = nullptr;
+	ID3D11ShaderResourceView* logoMode2Selected = nullptr;
+	bool logosLoaded = false;
 
 
 	//Search Workshop
@@ -173,7 +176,7 @@ public:
 	int NumPages = 0;
 	bool RLMAPS_Searching = false;
 	int RLMAPS_NumberOfMapsFound;
-	std::shared_ptr<ImageWrapper> RLMAPSLogoImage;
+	ID3D11ShaderResourceView* logoRLMAPS = nullptr;
 
 
 
