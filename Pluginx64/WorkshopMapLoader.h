@@ -12,6 +12,9 @@
 // Pure zlib ZIP extraction — the only extraction method used by this plugin.
 bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir);
 
+// Decode image bytes (JPEG/PNG) via GDI+ and upload to D3D11. Call on render thread only.
+ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data);
+
 
 struct Map
 {
