@@ -21,18 +21,52 @@ float heightHostGamePopup = 194.f;
 
 void Pluginx64::Render()
 {
-	// FIX: Lazy-init logo ImageWrappers here, NOT in onLoad().
-	// Render() is only called after BakkesMod has set up a fresh valid D3D11/ImGui
-	// context for this session. onLoad() runs too early — the D3D device is stale
-	// under Wine/Proton after a game restart, causing all textures to be invisible.
-	if (!RLMAPSLogoImage)
+	// Upload any pending preview textures on the render thread (where D3D11 device is valid).
+	// Background threads store raw file bytes; we decode+upload here via LoadTextureFromMemory.
+
+	// Local maps
+	for (auto& map : MapList)
+	{
+		if (map.PreviewImage == nullptr && !map.PreviewImageBytes.empty())
+		{
+			map.PreviewImage = LoadTextureFromMemory(map.PreviewImageBytes);
+			map.PreviewImageBytes.clear();
+			map.PreviewImageBytes.shrink_to_fit();
+			if (map.PreviewImage) map.isPreviewImageLoaded = true;
+		}
+	}
+
+	// Browse maps
+	{
+		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
+		for (auto& result : RLMAPS_MapResultList)
+		{
+			if (result.Image == nullptr && !result.RawImageBytes.empty())
+			{
+				result.Image = LoadTextureFromMemory(result.RawImageBytes);
+				result.RawImageBytes.clear();
+				result.RawImageBytes.shrink_to_fit();
+				if (result.Image) result.isImageLoaded = true;
+			}
+		}
+	}
+
+	// Lazy-init logo textures on the render thread (D3D11 device guaranteed valid here)
+	if (!logosLoaded)
 	{
 		std::string p = BakkesmodPath + "data/WorkshopMapLoader/";
-		RLMAPSLogoImage                     = std::make_shared<ImageWrapper>(p + "logos/rlmapslogo.png",    false, true);
-		MapsDisplayMode_Logo1_Image         = std::make_shared<ImageWrapper>(p + "logos/logo1.png",         false, true);
-		MapsDisplayMode_Logo2_Image         = std::make_shared<ImageWrapper>(p + "logos/logo2.png",         false, true);
-		MapsDisplayMode_Logo1_SelectedImage = std::make_shared<ImageWrapper>(p + "logos/logo1_selected.png",false, true);
-		MapsDisplayMode_Logo2_SelectedImage = std::make_shared<ImageWrapper>(p + "logos/logo2_selected.png",false, true);
+		auto loadLogo = [&](const std::string& path) -> ID3D11ShaderResourceView* {
+			std::ifstream f(path, std::ios::binary);
+			if (!f) return nullptr;
+			std::vector<unsigned char> bytes(std::istreambuf_iterator<char>(f), {});
+			return LoadTextureFromMemory(bytes);
+		};
+		logoRLMAPS         = loadLogo(p + "logos/rlmapslogo.png");
+		logoMode1          = loadLogo(p + "logos/logo1.png");
+		logoMode2          = loadLogo(p + "logos/logo2.png");
+		logoMode1Selected  = loadLogo(p + "logos/logo1_selected.png");
+		logoMode2Selected  = loadLogo(p + "logos/logo2_selected.png");
+		logosLoaded = true;
 	}
 
 	// PERF: Guard controller check so XInputGetState (expensive under Wine) is
@@ -388,10 +422,10 @@ void Pluginx64::Render()
 				ImGui::SetCursorPos(ImVec2(cursorPos.x + 14.f, cursorPos.y - 4.f));
 				ImGui::BeginGroup();
 				{
-					ImTextureID TextureID_DisplayMode1Image = MapsDisplayMode_Logo1_Image->GetImGuiTex();
+					ImTextureID TextureID_DisplayMode1Image = (ImTextureID)(intptr_t)logoMode1;
 					if (MapsDisplayMode == 0)
 					{
-						TextureID_DisplayMode1Image = MapsDisplayMode_Logo1_SelectedImage->GetImGuiTex();
+						TextureID_DisplayMode1Image = (ImTextureID)(intptr_t)logoMode1Selected;
 					}
 					renderImageButton(TextureID_DisplayMode1Image, ImVec2(36.f, 36.f), [this]() {
 						MapsDisplayMode = 0;
@@ -401,10 +435,10 @@ void Pluginx64::Render()
 
 					ImGui::SameLine();
 
-					ImTextureID TextureID_DisplayMode2Image = MapsDisplayMode_Logo2_Image->GetImGuiTex();
+					ImTextureID TextureID_DisplayMode2Image = (ImTextureID)(intptr_t)logoMode2;
 					if (MapsDisplayMode == 1)
 					{
-						TextureID_DisplayMode2Image = MapsDisplayMode_Logo2_SelectedImage->GetImGuiTex();
+						TextureID_DisplayMode2Image = (ImTextureID)(intptr_t)logoMode2Selected;
 					}
 					renderImageButton(TextureID_DisplayMode2Image, ImVec2(36.f, 36.f), [this]() {
 						MapsDisplayMode = 1;
@@ -465,7 +499,7 @@ void Pluginx64::Render()
 			try
 			{
 				CenterNexIMGUItItem(63.f);
-				ImGui::Image(RLMAPSLogoImage->GetImGuiTex(), ImVec2(63.f, 63.f));
+				if (logoRLMAPS) ImGui::Image((ImTextureID)(intptr_t)logoRLMAPS, ImVec2(63.f, 63.f));
 			}
 			catch (const std::exception& ex)
 			{
@@ -644,12 +678,9 @@ void Pluginx64::renderMaps(Gamepad controller)
 				{
 					try
 					{
-						if (curMap.PreviewImage != nullptr)
+						if (curMap.PreviewImage)
 						{
-							if (curMap.PreviewImage->GetImGuiTex())
-							{
-								draw_list->AddImage(curMap.PreviewImage->GetImGuiTex(), ImageMin, ImageMax);
-							}
+							draw_list->AddImage((ImTextureID)(intptr_t)curMap.PreviewImage, ImageMin, ImageMax);
 						}
 					}
 					catch (const std::exception& ex)
@@ -951,23 +982,8 @@ void Pluginx64::renderMaps_DisplayMode_0(Map map)
 
 
 		draw_list->AddRect(ImageMin, ImageMax, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
-		if (map.isPreviewImageLoaded == true)
-		{
-			try
-			{
-				if (map.PreviewImage != nullptr)
-				{
-					if (map.PreviewImage->GetImGuiTex())
-					{
-						draw_list->AddImage(map.PreviewImage->GetImGuiTex(), ImageMin, ImageMax);
-					}
-				}
-			}
-			catch (const std::exception& ex)
-			{
-				cvarManager->log(ex.what());
-			}
-		}
+		if (map.isPreviewImageLoaded && map.PreviewImage)
+			draw_list->AddImage((ImTextureID)(intptr_t)map.PreviewImage, ImageMin, ImageMax);
 
 		if (map.JsonFile == "NoInfos")
 		{
@@ -1058,23 +1074,8 @@ void Pluginx64::renderMaps_DisplayMode_1(Map map, float buttonWidth)
 
 
 		draw_list->AddRect(ImageMin, ImageMax, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
-		if (map.isPreviewImageLoaded == true)
-		{
-			try
-			{
-				if (map.PreviewImage != nullptr)
-				{
-					if (map.PreviewImage->GetImGuiTex())
-					{
-						draw_list->AddImage(map.PreviewImage->GetImGuiTex(), ImageMin, ImageMax);
-					}
-				}
-			}
-			catch (const std::exception& ex)
-			{
-				cvarManager->log(ex.what());
-			}
-		}
+		if (map.isPreviewImageLoaded && map.PreviewImage)
+			draw_list->AddImage((ImTextureID)(intptr_t)map.PreviewImage, ImageMin, ImageMax);
 
 		ImFont* fontA = ImGui::GetDefaultFont();
 
@@ -1228,10 +1229,9 @@ void Pluginx64::RLMAPS_RenderAResult(int i, ImDrawList* drawList, static char ma
 			drawList->AddRectFilled(TopCornerLeft, RectFilled_p_max, ImColor(44, 75, 113, 255), 5.f, 15);
 			drawList->AddRect(ImageP_Min, ImageP_Max, ImColor(255, 255, 255, 255), 0, 15, 2.0F);
 
-			// Use ImageWrapper::GetImGuiTex() — identical to how local maps render previews
-			if (mapResult.isImageLoaded && mapResult.Image != nullptr && mapResult.Image->GetImGuiTex())
+			if (mapResult.isImageLoaded && mapResult.Image != nullptr)
 			{
-				drawList->AddImage(mapResult.Image->GetImGuiTex(), ImageP_Min, ImageP_Max);
+				drawList->AddImage((ImTextureID)(intptr_t)mapResult.Image, ImageP_Min, ImageP_Max);
 			}
 			else
 			{
