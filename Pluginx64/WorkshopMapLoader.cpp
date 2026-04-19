@@ -171,6 +171,9 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 {
 	if (data.empty()) return nullptr;
 
+	// Return nullptr (without consuming bytes) if D3D11 isn't ready yet
+	if (!ImGui_ImplDX11_GetDevice()) return nullptr;
+
 	static ULONG_PTR gdiplusToken = 0;
 	static bool gdiplusInitialised = false;
 	if (!gdiplusInitialised)
