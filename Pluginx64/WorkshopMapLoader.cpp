@@ -167,6 +167,11 @@ bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
 // LoadTextureFromMemory — decode JPEG/PNG bytes via GDI+ and upload to D3D11.
 // Must be called from the render thread. Returns nullptr on failure.
 // ---------------------------------------------------------------------------
+// GDI+ state at module level so onUnload() can shut it down cleanly and
+// onLoad() can re-initialise it — avoiding the stale-static bug on plugin reload.
+static ULONG_PTR s_gdiplusToken      = 0;
+static bool      s_gdiplusInitialised = false;
+
 // Get the game's D3D11 device via ImGui's font texture SRV.
 // ImGui's font texture was created with the game's real device — GetDevice() on
 // that resource gives us the exact same device without any guesswork.
@@ -196,8 +201,8 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	ID3D11Device* device = GetGameD3DDevice();
 	if (!device) return nullptr;
 
-	static ULONG_PTR gdiplusToken = 0;
-	static bool gdiplusInitialised = false;
+	static ULONG_PTR& gdiplusToken      = s_gdiplusToken;
+	static bool&      gdiplusInitialised = s_gdiplusInitialised;
 	if (!gdiplusInitialised)
 	{
 		Gdiplus::GdiplusStartupInput startupInput;
@@ -559,8 +564,11 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 	cachedGoodMapList.clear();
 	for (auto& map : MapList)
 	{
+		// Show as "needs extraction" only if there's a zip but no upk yet.
+		// If a map has no zip (already extracted or manually installed), it's fine.
 		if (map.UpkFile == "NoUpkFound" && map.ZipFile != "EmptyFolder" && map.ZipFile != "NoZipFound")
 			cachedNoUpkMapList.push_back(map);
+		// A map is valid and loadable as long as it has a upk — zip presence is irrelevant.
 		if (map.UpkFile != "NoUpkFound" && map.UpkFile != "EmptyFolder")
 			cachedGoodMapList.push_back(map);
 	}
@@ -699,7 +707,10 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 	const Json::Value maps2 = actualJson2;
 
 	std::string projectPath = maps[index]["path_with_namespace"].asString();
-	std::string pictureUrl = "https://celab.jetfox.ovh/" + projectPath + "/-/raw/master/RLMPreview.jpg";
+	// Primary: well-known filename convention used by most maps on celab.
+	// Fallback: any link_type=="image" asset attached to the first release.
+	std::string pictureUrl     = "https://celab.jetfox.ovh/" + projectPath + "/-/raw/master/RLMPreview.jpg";
+	std::string pictureUrlAlt; // filled from release asset if found
 
 	std::vector<RLMAPS_Release> releases;
 	for (int release_index = 0; release_index < maps2.size(); ++release_index)
@@ -714,7 +725,11 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 		for (int li = 0; li < (int)links.size(); ++li)
 		{
 			std::string linkType = links[li]["link_type"].asString();
-			if (linkType != "image")
+			if (linkType == "image" && pictureUrlAlt.empty())
+			{
+				pictureUrlAlt = links[li]["url"].asString();
+			}
+			else if (linkType != "image")
 			{
 				release.downloadLink = links[li]["url"].asString();
 				release.zipName = links[li]["name"].asString();
@@ -760,7 +775,7 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 				RLMAPS_MapResultList.push_back(result);
 				listIndex = (int)RLMAPS_MapResultList.size() - 1;
 			}
-			DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), listIndex);
+			DownloadPreviewImage(result.PreviewUrl, resultImagePath.string(), listIndex, pictureUrlAlt);
 		}
 		else
 		{
@@ -920,7 +935,16 @@ void Pluginx64::RLMAPS_DownloadWorkshop(std::string folderpath, RLMAPS_MapResult
 	cvarManager->log("Extracting via CppZip (zlib)...");
 	bool ok = ExtractZipCpp(Folder_Path, Workshop_Dl_Path);
 	if (ok)
+	{
 		cvarManager->log("CppZip extraction succeeded.");
+		// Delete the zip to free disk space — the downloader can re-fetch it if needed.
+		std::error_code ec;
+		fs::remove(fs::path(Folder_Path), ec);
+		if (!ec)
+			cvarManager->log("Zip deleted: " + Folder_Path);
+		else
+			cvarManager->log("Zip delete failed (non-fatal): " + ec.message());
+	}
 	else
 		cvarManager->log("CppZip extraction failed - zip may be corrupt or path issue.");
 
@@ -1159,7 +1183,7 @@ std::vector<std::string> Pluginx64::GetMapsFolderPathInCfg(std::string cfgFilePa
 	return CfgInfosList;
 }
 
-void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePath, int mapResultIndex)
+void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePath, int mapResultIndex, std::string fallbackUrl)
 {
 	std::string download_url = downloadUrl;
 	std::string File_Path = filePath;
@@ -1168,11 +1192,20 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 	CurlRequest req;
 	req.url = download_url;
 
-	HttpWrapper::SendCurlRequest(req, [this, File_Path, mapResultIndex](int code, char* data, size_t size)
+	HttpWrapper::SendCurlRequest(req, [this, File_Path, mapResultIndex, fallbackUrl](int code, char* data, size_t size)
 		{
 			if (code != 200 || size == 0)
 			{
 				cvarManager->log("PREVIEW DOWNLOAD FAILED code=" + std::to_string(code) + " for index " + std::to_string(mapResultIndex));
+
+				// Try the fallback URL (image-type asset link from release) if available
+				if (!fallbackUrl.empty())
+				{
+					cvarManager->log("Trying fallback preview URL for index " + std::to_string(mapResultIndex));
+					DownloadPreviewImage(fallbackUrl, File_Path, mapResultIndex, ""); // no further fallback
+					return;
+				}
+
 				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
 				return;
@@ -1443,6 +1476,12 @@ void Pluginx64::onUnload()
 	if (logoMode1Selected) { logoMode1Selected->Release(); logoMode1Selected = nullptr; }
 	if (logoMode2Selected) { logoMode2Selected->Release(); logoMode2Selected = nullptr; }
 	logosLoaded = false;
+	if (s_gdiplusInitialised)
+	{
+		Gdiplus::GdiplusShutdown(s_gdiplusToken);
+		s_gdiplusToken      = 0;
+		s_gdiplusInitialised = false;
+	}
 	if (s_cachedDevice) { s_cachedDevice->Release(); s_cachedDevice = nullptr; }
 
 	RLMAPS_MapResultList.clear();
