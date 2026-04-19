@@ -419,17 +419,19 @@ std::vector<std::string> Pluginx64::GetJSONLocalMapInfos(std::string jsonFilePat
 	Json::Reader reader;
 	reader.parse(Text, actualJson);
 
-	std::string MapTitle = actualJson["Title"].asString();
+	std::string MapTitle       = actualJson["Title"].asString();
 	std::string MapDescription = actualJson["Description"].asString();
-	std::string MapAuthor = actualJson["Author"].asString();
+	std::string MapAuthor      = actualJson["Author"].asString();
+	std::string MapPreviewUrl  = actualJson["PreviewUrl"].asString();
 
 	MapTitle.erase(std::remove(MapTitle.begin(), MapTitle.end(), '\n'), MapTitle.end());
 	MapDescription.erase(std::remove(MapDescription.begin(), MapDescription.end(), '\n'), MapDescription.end());
 	MapAuthor.erase(std::remove(MapAuthor.begin(), MapAuthor.end(), '\n'), MapAuthor.end());
 
-	Infos.push_back(MapTitle);
-	Infos.push_back(MapDescription);
-	Infos.push_back(MapAuthor);
+	Infos.push_back(MapTitle);        // [0]
+	Infos.push_back(MapDescription);  // [1]
+	Infos.push_back(MapAuthor);        // [2]
+	Infos.push_back(MapPreviewUrl);    // [3]
 
 	return Infos;
 }
@@ -483,9 +485,11 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 						map.JsonFile = file.path().string();
 						hasFoundJSON = true;
 						std::vector<std::string> MapInfosList = GetJSONLocalMapInfos(map.JsonFile);
-						map.mapName = MapInfosList.at(0);
+						map.mapName        = MapInfosList.at(0);
 						map.mapDescription = MapInfosList.at(1);
-						map.mapAuthor = MapInfosList.at(2);
+						map.mapAuthor      = MapInfosList.at(2);
+						if (MapInfosList.size() > 3)
+							map.mapPreviewUrl = MapInfosList.at(3);
 						cvarManager->log("JSON name  : " + file.path().filename().string());
 					}
 				}
@@ -500,18 +504,23 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 
 				if ((!hasFoundPreview && fileExtension == ".png") || (!hasFoundPreview && fileExtension == ".jpg") || (!hasFoundPreview && fileExtension == ".jfif"))
 				{
+					// Read image bytes directly — render thread uploads via LoadTextureFromMemory
 					std::ifstream imgf(file.path(), std::ios::binary);
-					if (imgf) map.PreviewImageBytes.assign(std::istreambuf_iterator<char>(imgf), std::istreambuf_iterator<char>());
-					cvarManager->log("Preview bytes read : " + file.path().string());
+					if (imgf)
+					{
+						map.PreviewImageBytes.assign(
+							std::istreambuf_iterator<char>(imgf),
+							std::istreambuf_iterator<char>());
+						cvarManager->log("Preview bytes read: " + file.path().string()
+							+ " (" + std::to_string(map.PreviewImageBytes.size()) + " bytes)");
+					}
 					hasFoundPreview = true;
 				}
 				else
 				{
 					if (nbFiles == nbFilesInDirectory && hasFoundPreview == false)
 					{
-						std::ifstream imgf(IfNoPreviewImagePath, std::ios::binary);
-						if (imgf) map.PreviewImageBytes.assign(std::istreambuf_iterator<char>(imgf), std::istreambuf_iterator<char>());
-						cvarManager->log("No preview found in this folder");
+						cvarManager->log("No local preview found — will download from URL if available");
 					}
 				}
 
@@ -550,14 +559,71 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 			map.UpkFile = "EmptyFolder";
 			map.ZipFile = "EmptyFolder";
 			map.JsonFile = "EmptyFolder";
-			{
-			std::ifstream imgf(IfNoPreviewImagePath, std::ios::binary);
-			if (imgf) map.PreviewImageBytes.assign(std::istreambuf_iterator<char>(imgf), std::istreambuf_iterator<char>());
-		}
 		}
 
 		MapList.push_back(map);
 		cvarManager->log("");
+	}
+
+	// For maps with no local preview image but a PreviewUrl in their JSON,
+	// download the preview in the background — same pipeline as the browse tab.
+	// Cache goes to data/WorkshopMapLoader/LocalPreviews/<folder_name>.jfif
+	std::string localPreviewCacheDir = BakkesmodPath + "data/WorkshopMapLoader/LocalPreviews/";
+	try { fs::create_directories(fs::path(localPreviewCacheDir)); } catch (...) {}
+
+	for (int mi = 0; mi < (int)MapList.size(); ++mi)
+	{
+		Map& m = MapList[mi];
+		if (!m.PreviewImageBytes.empty()) continue;        // already have bytes
+		if (m.mapPreviewUrl.empty()) continue;             // no URL to fetch from
+
+		// Check if we have a cached download from a previous session
+		std::string folderName = m.Folder.filename().string();
+		std::string cachePath  = localPreviewCacheDir + folderName + ".jfif";
+		std::replace(cachePath.begin(), cachePath.end(), '\\', '/');
+
+		if (Directory_Or_File_Exists(fs::path(cachePath)))
+		{
+			// Cache hit — read bytes directly
+			std::ifstream cf(cachePath, std::ios::binary);
+			if (cf)
+			{
+				m.PreviewImageBytes.assign(
+					std::istreambuf_iterator<char>(cf),
+					std::istreambuf_iterator<char>());
+				cvarManager->log("Local preview cache hit: " + cachePath
+					+ " (" + std::to_string(m.PreviewImageBytes.size()) + " bytes)");
+				continue;
+			}
+		}
+
+		// Cache miss — download from workshop URL (background thread, same as browse tab)
+		cvarManager->log("Downloading local preview from URL: " + m.mapPreviewUrl);
+		std::thread([this, mi, cachePath, previewUrl = m.mapPreviewUrl]() mutable
+		{
+			CurlRequest req;
+			req.url = previewUrl;
+			HttpWrapper::SendCurlRequest(req, [this, mi, cachePath](int code, char* data, size_t size)
+			{
+				if (code != 200 || size == 0)
+				{
+					cvarManager->log("Local preview download failed (code=" + std::to_string(code) + ") for map index " + std::to_string(mi));
+					return;
+				}
+
+				// Save to cache
+				try { fs::create_directories(fs::path(cachePath).parent_path()); } catch (...) {}
+				std::ofstream f(cachePath, std::ios::binary);
+				if (f) { f.write(data, size); f.close(); }
+
+				// Store bytes for render-thread upload
+				if (mi < (int)MapList.size())
+				{
+					MapList[mi].PreviewImageBytes.assign(data, data + size);
+					cvarManager->log("Local preview ready: " + MapList[mi].mapName);
+				}
+			});
+		}).detach();
 	}
 
 	cachedNoUpkMapList.clear();
