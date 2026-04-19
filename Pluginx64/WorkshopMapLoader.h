@@ -21,6 +21,7 @@ struct Map
 	std::string mapName;
 	std::string mapDescription;
 	std::string mapAuthor;
+	std::string mapPreviewUrl; // from JSON, used to fetch preview if no local image
 
 	std::filesystem::path Folder; //Map folder
 	std::filesystem::path UpkFile; //Map(.upk) in the map directory
