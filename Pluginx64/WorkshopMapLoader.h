@@ -236,7 +236,7 @@ public:
 	bool isQuickSearchDisplayed = false;
 	bool QuickSearch_Searching = false;
 	char QuickSearch_KeyWordBuf[128];
-	std::vector<Map> QuickSearch_GetMapList(std::string keyWord);
+	std::vector<Map*> QuickSearch_GetMapList(std::string keyWord);
 
 	void Render() override;
 	std::string GetMenuName() override;
