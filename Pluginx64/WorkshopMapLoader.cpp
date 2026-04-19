@@ -15,111 +15,6 @@ namespace
 }
 
 
-// ---------------------------------------------------------------------------
-// LoadTextureFromMemory — decode JPEG/PNG/BMP bytes via GDI+ and upload to D3D11.
-// GDI+ is used instead of WIC because Wine's GDI+ support is rock-solid
-// (used by .NET and virtually every Windows app), while WIC COM registration
-// is unreliable under Wine/Proton.
-// Must be called from the render thread.
-// ---------------------------------------------------------------------------
-ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
-{
-	if (data.empty()) return nullptr;
-
-	static ULONG_PTR gdiplusToken = 0;
-	static bool gdiplusInitialised = false;
-	if (!gdiplusInitialised)
-	{
-		Gdiplus::GdiplusStartupInput startupInput;
-		Gdiplus::GdiplusStartup(&gdiplusToken, &startupInput, nullptr);
-		gdiplusInitialised = true;
-	}
-
-	IStream* stream = SHCreateMemStream(data.data(), static_cast<UINT>(data.size()));
-	if (!stream) return nullptr;
-
-	Gdiplus::Bitmap* bitmap = Gdiplus::Bitmap::FromStream(stream);
-	stream->Release();
-
-	if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok)
-	{
-		delete bitmap;
-		return nullptr;
-	}
-
-	UINT width  = bitmap->GetWidth();
-	UINT height = bitmap->GetHeight();
-
-	Gdiplus::BitmapData bitmapData;
-	Gdiplus::Rect rect(0, 0, static_cast<INT>(width), static_cast<INT>(height));
-	if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead,
-		PixelFormat32bppARGB, &bitmapData) != Gdiplus::Ok)
-	{
-		delete bitmap;
-		return nullptr;
-	}
-
-	std::vector<BYTE> rgba(width * height * 4);
-	const BYTE* src = static_cast<const BYTE*>(bitmapData.Scan0);
-	for (UINT y = 0; y < height; ++y)
-	{
-		const BYTE* row = src + y * bitmapData.Stride;
-		BYTE* dst = rgba.data() + y * width * 4;
-		for (UINT x = 0; x < width; ++x)
-		{
-			dst[0] = row[2];
-			dst[1] = row[1];
-			dst[2] = row[0];
-			dst[3] = row[3];
-			row += 4;
-			dst += 4;
-		}
-	}
-
-	bitmap->UnlockBits(&bitmapData);
-	delete bitmap;
-
-	ID3D11Device* device = ImGui_ImplDX11_GetDevice();
-	if (!device) return nullptr;
-
-	D3D11_TEXTURE2D_DESC desc = {};
-	desc.Width            = width;
-	desc.Height           = height;
-	desc.MipLevels        = 1;
-	desc.ArraySize        = 1;
-	desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
-	desc.SampleDesc.Count = 1;
-	desc.Usage            = D3D11_USAGE_DEFAULT;
-	desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
-
-	D3D11_SUBRESOURCE_DATA initData = {};
-	initData.pSysMem     = rgba.data();
-	initData.SysMemPitch = width * 4;
-
-	ID3D11Texture2D* tex = nullptr;
-	if (FAILED(device->CreateTexture2D(&desc, &initData, &tex))) return nullptr;
-
-	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Format              = DXGI_FORMAT_R8G8B8A8_UNORM;
-	srvDesc.ViewDimension       = D3D11_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.Texture2D.MipLevels = 1;
-
-	ID3D11ShaderResourceView* srv = nullptr;
-	HRESULT hr = device->CreateShaderResourceView(tex, &srvDesc, &srv);
-	tex->Release();
-	if (FAILED(hr)) return nullptr;
-
-	ID3D11DeviceContext* immediateCtx = nullptr;
-	device->GetImmediateContext(&immediateCtx);
-	if (immediateCtx)
-	{
-		immediateCtx->Flush();
-		immediateCtx->Release();
-	}
-
-	return srv;
-}
-
 
 // ---------------------------------------------------------------------------
 // ExtractZipCpp — pure C++ ZIP extraction using only zlib (already linked).
@@ -282,13 +177,19 @@ void Pluginx64::onLoad()
 	std::string RLWin64_Path = std::filesystem::current_path().string();
 	RLCookedPCConsole_Path = RLWin64_Path.substr(0, RLWin64_Path.length() - 14) + "TAGame\\CookedPCConsole";
 
-	std::string Data_WorkshopMapLoader_Path = BakkesmodPath + "data/WorkshopMapLoader/";
-
-	RLMAPSLogoImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/rlmapslogo.png", false, true);
-	MapsDisplayMode_Logo1_Image = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo1.png", false, true);
-	MapsDisplayMode_Logo2_Image = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo2.png", false, true);
-	MapsDisplayMode_Logo1_SelectedImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo1_selected.png", false, true);
-	MapsDisplayMode_Logo2_SelectedImage = std::make_shared<ImageWrapper>(Data_WorkshopMapLoader_Path + "logos/logo2_selected.png", false, true);
+	// FIX: Do NOT create ImageWrapper objects here.
+	// onLoad() is called before BakkesMod sets up a valid ImGui/D3D11 context for this
+	// session. Under Wine/Proton the DLL stays resident between game restarts, so the
+	// D3D device from the previous session is already destroyed when onLoad() runs again.
+	// ImageWrapper uploads textures to D3D11 on construction — doing that here produces
+	// stale/invalid texture handles that silently render as nothing.
+	// All logo ImageWrappers are created lazily at the top of Render() instead,
+	// where a fresh valid D3D11 context is guaranteed.
+	RLMAPSLogoImage = nullptr;
+	MapsDisplayMode_Logo1_Image = nullptr;
+	MapsDisplayMode_Logo2_Image = nullptr;
+	MapsDisplayMode_Logo1_SelectedImage = nullptr;
+	MapsDisplayMode_Logo2_SelectedImage = nullptr;
 
 	if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\workshopmaploader.cfg"))
 	{
@@ -1425,5 +1326,16 @@ void Pluginx64::ApplyLanguage()
 
 void Pluginx64::onUnload()
 {
+	// Release all ImageWrapper shared_ptrs explicitly so their D3D11 textures are
+	// freed before the device is torn down. On next onLoad()+Render() cycle they
+	// will be re-created with a fresh valid device.
 	RLMAPS_MapResultList.clear();
+	MapList.clear();
+	cachedNoUpkMapList.clear();
+	cachedGoodMapList.clear();
+	RLMAPSLogoImage = nullptr;
+	MapsDisplayMode_Logo1_Image = nullptr;
+	MapsDisplayMode_Logo2_Image = nullptr;
+	MapsDisplayMode_Logo1_SelectedImage = nullptr;
+	MapsDisplayMode_Logo2_SelectedImage = nullptr;
 }
