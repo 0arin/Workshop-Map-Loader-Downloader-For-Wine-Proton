@@ -515,12 +515,12 @@ bool    ImGui_ImplDX11_Init(ID3D11Device* device, ID3D11DeviceContext* device_co
     IDXGIAdapter* pDXGIAdapter = NULL;
     IDXGIFactory* pFactory = NULL;
 
+    g_pd3dDevice = device;
+    g_pd3dDeviceContext = device_context;
     if (device->QueryInterface(IID_PPV_ARGS(&pDXGIDevice)) == S_OK)
         if (pDXGIDevice->GetParent(IID_PPV_ARGS(&pDXGIAdapter)) == S_OK)
             if (pDXGIAdapter->GetParent(IID_PPV_ARGS(&pFactory)) == S_OK)
             {
-                g_pd3dDevice = device;
-                g_pd3dDeviceContext = device_context;
                 g_pFactory = pFactory;
             }
     if (pDXGIDevice) pDXGIDevice->Release();
