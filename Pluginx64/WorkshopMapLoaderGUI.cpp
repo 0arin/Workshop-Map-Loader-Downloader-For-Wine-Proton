@@ -24,19 +24,29 @@ void Pluginx64::Render()
 	// Upload any pending preview textures on the render thread (where D3D11 device is valid).
 	// Background threads store raw file bytes; we decode+upload here via LoadTextureFromMemory.
 
-	// Local maps
+	// Local maps — only clear bytes if upload succeeded so we can retry next frame
 	for (auto& map : MapList)
 	{
 		if (map.PreviewImage == nullptr && !map.PreviewImageBytes.empty())
 		{
 			map.PreviewImage = LoadTextureFromMemory(map.PreviewImageBytes);
-			map.PreviewImageBytes.clear();
-			map.PreviewImageBytes.shrink_to_fit();
-			if (map.PreviewImage) map.isPreviewImageLoaded = true;
+			if (map.PreviewImage)
+			{
+				map.isPreviewImageLoaded = true;
+				map.PreviewImageBytes.clear();
+				map.PreviewImageBytes.shrink_to_fit();
+				cvarManager->log("Texture uploaded: " + map.mapName);
+			}
+			else
+			{
+				cvarManager->log("Texture upload FAILED (will retry): " + map.mapName
+					+ " bytes=" + std::to_string(map.PreviewImageBytes.size())
+					+ " device=" + std::to_string(ImGui_ImplDX11_GetDevice() != nullptr));
+			}
 		}
 	}
 
-	// Browse maps
+	// Browse maps — only clear bytes if upload succeeded so we can retry next frame
 	{
 		std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
 		for (auto& result : RLMAPS_MapResultList)
@@ -44,15 +54,18 @@ void Pluginx64::Render()
 			if (result.Image == nullptr && !result.RawImageBytes.empty())
 			{
 				result.Image = LoadTextureFromMemory(result.RawImageBytes);
-				result.RawImageBytes.clear();
-				result.RawImageBytes.shrink_to_fit();
-				if (result.Image) result.isImageLoaded = true;
+				if (result.Image)
+				{
+					result.isImageLoaded = true;
+					result.RawImageBytes.clear();
+					result.RawImageBytes.shrink_to_fit();
+				}
 			}
 		}
 	}
 
 	// Lazy-init logo textures on the render thread (D3D11 device guaranteed valid here)
-	if (!logosLoaded)
+	if (!logosLoaded && ImGui_ImplDX11_GetDevice())
 	{
 		std::string p = BakkesmodPath + "data/WorkshopMapLoader/";
 		auto loadLogo = [&](const std::string& path) -> ID3D11ShaderResourceView* {
@@ -66,7 +79,9 @@ void Pluginx64::Render()
 		logoMode2          = loadLogo(p + "logos/logo2.png");
 		logoMode1Selected  = loadLogo(p + "logos/logo1_selected.png");
 		logoMode2Selected  = loadLogo(p + "logos/logo2_selected.png");
-		logosLoaded = true;
+		// Only mark done if at least one loaded — otherwise retry next frame
+		if (logoRLMAPS || logoMode1 || logoMode2)
+			logosLoaded = true;
 	}
 
 	// PERF: Guard controller check so XInputGetState (expensive under Wine) is
