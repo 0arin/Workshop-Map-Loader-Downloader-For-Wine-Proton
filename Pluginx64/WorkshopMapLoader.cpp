@@ -163,6 +163,98 @@ bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
 }
 
 
+// ---------------------------------------------------------------------------
+// LoadTextureFromMemory — decode JPEG/PNG bytes via GDI+ and upload to D3D11.
+// Must be called from the render thread. Returns nullptr on failure.
+// ---------------------------------------------------------------------------
+ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
+{
+	if (data.empty()) return nullptr;
+
+	static ULONG_PTR gdiplusToken = 0;
+	static bool gdiplusInitialised = false;
+	if (!gdiplusInitialised)
+	{
+		Gdiplus::GdiplusStartupInput startupInput;
+		Gdiplus::GdiplusStartup(&gdiplusToken, &startupInput, nullptr);
+		gdiplusInitialised = true;
+	}
+
+	IStream* stream = SHCreateMemStream(data.data(), static_cast<UINT>(data.size()));
+	if (!stream) return nullptr;
+
+	Gdiplus::Bitmap* bitmap = Gdiplus::Bitmap::FromStream(stream);
+	stream->Release();
+
+	if (!bitmap || bitmap->GetLastStatus() != Gdiplus::Ok)
+	{
+		delete bitmap;
+		return nullptr;
+	}
+
+	UINT width  = bitmap->GetWidth();
+	UINT height = bitmap->GetHeight();
+	Gdiplus::BitmapData bitmapData;
+	Gdiplus::Rect rect(0, 0, (INT)width, (INT)height);
+	if (bitmap->LockBits(&rect, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB, &bitmapData) != Gdiplus::Ok)
+	{
+		delete bitmap;
+		return nullptr;
+	}
+
+	// GDI+ gives BGRA; D3D11 wants RGBA — swizzle B<->R
+	std::vector<BYTE> rgba(width * height * 4);
+	const BYTE* src = static_cast<const BYTE*>(bitmapData.Scan0);
+	for (UINT y = 0; y < height; ++y)
+	{
+		const BYTE* row = src + y * bitmapData.Stride;
+		BYTE* dst = rgba.data() + y * width * 4;
+		for (UINT x = 0; x < width; ++x)
+		{
+			dst[0] = row[2]; dst[1] = row[1]; dst[2] = row[0]; dst[3] = row[3];
+			row += 4; dst += 4;
+		}
+	}
+	bitmap->UnlockBits(&bitmapData);
+	delete bitmap;
+
+	ID3D11Device* device = ImGui_ImplDX11_GetDevice();
+	if (!device) return nullptr;
+
+	D3D11_TEXTURE2D_DESC desc = {};
+	desc.Width = width; desc.Height = height;
+	desc.MipLevels = 1; desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Usage = D3D11_USAGE_DEFAULT;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+	D3D11_SUBRESOURCE_DATA initData = {};
+	initData.pSysMem = rgba.data();
+	initData.SysMemPitch = width * 4;
+
+	ID3D11Texture2D* tex = nullptr;
+	if (FAILED(device->CreateTexture2D(&desc, &initData, &tex))) return nullptr;
+
+	D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MipLevels = 1;
+
+	ID3D11ShaderResourceView* srv = nullptr;
+	HRESULT hr = device->CreateShaderResourceView(tex, &srvDesc, &srv);
+	tex->Release();
+	if (FAILED(hr)) return nullptr;
+
+	// Flush so Wine/Proton's D3D11 layer commits the texture before the next frame
+	ID3D11DeviceContext* ctx = nullptr;
+	device->GetImmediateContext(&ctx);
+	if (ctx) { ctx->Flush(); ctx->Release(); }
+
+	return srv;
+}
+
+
 std::string GameSetting::GetSelectedValue()
 {
 	return Values[selectedValue];
