@@ -1004,16 +1004,17 @@ void Pluginx64::GetMapSize(std::string donwloadUrl)
 }
 
 
-std::vector<Map> Pluginx64::QuickSearch_GetMapList(std::string keyWord)
+std::vector<Map*> Pluginx64::QuickSearch_GetMapList(std::string keyWord)
 {
-	std::vector<Map> List;
-	for (auto map : MapList)
+	std::vector<Map*> List;
+	std::string lowerKey = keyWord;
+	std::transform(lowerKey.begin(), lowerKey.end(), lowerKey.begin(), ::tolower);
+	for (auto& map : MapList)
 	{
 		std::string mapName = map.mapName;
 		std::transform(mapName.begin(), mapName.end(), mapName.begin(), ::tolower);
-		std::transform(keyWord.begin(), keyWord.end(), keyWord.begin(), ::tolower);
-		if (mapName.find(keyWord) != std::string::npos)
-			List.push_back(map);
+		if (mapName.find(lowerKey) != std::string::npos)
+			List.push_back(&map);
 	}
 	return List;
 }
