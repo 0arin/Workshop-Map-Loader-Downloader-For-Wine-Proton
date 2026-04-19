@@ -311,6 +311,7 @@ void Pluginx64::onLoad()
 		dontAsk = std::stoi(CFGVariablesList.at(4));
 		MapsDisplayMode = std::stoi(CFGVariablesList.at(5));
 		nbTilesPerLine = std::stoi(CFGVariablesList.at(6));
+		if (nbTilesPerLine < 2 || nbTilesPerLine > 14) nbTilesPerLine = 5;
 		ControllerSensitivity = std::stoi(CFGVariablesList.at(7));
 		ControllerScrollSensitivity = std::stoi(CFGVariablesList.at(8));
 
@@ -347,7 +348,7 @@ void Pluginx64::onLoad()
 		HasSeeNewUpdateAlert = false;
 		dontAsk = 0;
 		MapsDisplayMode = 0;
-		nbTilesPerLine = 6;
+		nbTilesPerLine = 5;
 		ControllerSensitivity = 10;
 		ControllerScrollSensitivity = 10;
 		PluginVersion = "1.15.2";
