@@ -41,7 +41,7 @@ void Pluginx64::Render()
 			{
 				cvarManager->log("Texture upload FAILED (will retry): " + map.mapName
 					+ " bytes=" + std::to_string(map.PreviewImageBytes.size())
-					+ " device=" + std::to_string(ImGui_ImplDX11_GetDevice() != nullptr));
+					+ " fontTex=" + std::to_string(ImGui::GetIO().Fonts && ImGui::GetIO().Fonts->TexID));
 			}
 		}
 	}
@@ -65,7 +65,7 @@ void Pluginx64::Render()
 	}
 
 	// Lazy-init logo textures on the render thread (D3D11 device guaranteed valid here)
-	if (!logosLoaded && ImGui_ImplDX11_GetDevice())
+	if (!logosLoaded && ImGui::GetIO().Fonts && ImGui::GetIO().Fonts->TexID)
 	{
 		std::string p = BakkesmodPath + "data/WorkshopMapLoader/";
 		auto loadLogo = [&](const std::string& path) -> ID3D11ShaderResourceView* {
