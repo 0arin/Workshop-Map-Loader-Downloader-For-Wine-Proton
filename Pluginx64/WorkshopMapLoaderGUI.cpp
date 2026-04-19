@@ -636,10 +636,22 @@ void Pluginx64::renderMaps(Gamepad controller)
 {
 	mapButtonList.clear();
 
-	// PERF: Use pre-split cached lists built in RefreshMapsFunct instead of
-	// iterating MapList and splitting into two vectors every frame.
-	const std::vector<Map>& NoUpk_MapList = cachedNoUpkMapList;
-	std::vector<Map> Good_MapList = cachedGoodMapList; // local copy for QuickSearch filtering below
+	// Build filtered views of MapList by reference so any PreviewImage updates
+	// (set by the render-thread upload loop above) are immediately visible.
+	// cachedNoUpkMapList / cachedGoodMapList are value-copies made at refresh time
+	// and would miss PreviewImage pointers set after the refresh.
+	std::vector<Map*> NoUpk_MapList;
+	std::vector<Map*> Good_MapList;
+	for (auto& m : MapList)
+	{
+		if (m.UpkFile == "NoUpkFound" && m.ZipFile != "EmptyFolder" && m.ZipFile != "NoZipFound")
+			NoUpk_MapList.push_back(&m);
+		else if (m.UpkFile != "NoUpkFound" && m.UpkFile != "EmptyFolder")
+			Good_MapList.push_back(&m);
+	}
+
+	// Apply QuickSearch filter if active (filter Good_MapList by keyword)
+	std::vector<Map*> Filtered_MapList = Good_MapList;
 
 	int ID = 0;
 
@@ -650,8 +662,9 @@ void Pluginx64::renderMaps(Gamepad controller)
 		float buttonWidth = (windowWidth - ((nbTilesPerLine - 1) * 8)) / nbTilesPerLine;
 		int nbTilesOnTheCurrentLine = 0;
 
-		for (auto curMap : NoUpk_MapList)
+		for (auto* mapPtr : NoUpk_MapList)
 		{
+			auto& curMap = *mapPtr;
 			ImGui::PushID(ID);
 			ImGui::BeginGroup();
 			{
@@ -750,7 +763,7 @@ void Pluginx64::renderMaps(Gamepad controller)
 
 		if (std::string(QuickSearch_KeyWordBuf) != "")
 		{
-			Good_MapList = QuickSearch_GetMapList(std::string(QuickSearch_KeyWordBuf));
+			Filtered_MapList = QuickSearch_GetMapList(std::string(QuickSearch_KeyWordBuf));
 			QuickSearch_Searching = true;
 		}
 		else
@@ -758,8 +771,9 @@ void Pluginx64::renderMaps(Gamepad controller)
 			QuickSearch_Searching = false;
 		}
 
-		for (auto curMap : Good_MapList)
+		for (auto* mapPtr : Filtered_MapList)
 		{
+			auto& curMap = *mapPtr;
 			ImGui::PushID(ID);
 
 			if (MapsDisplayMode == 0)
