@@ -565,64 +565,167 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 		cvarManager->log("");
 	}
 
-	// For maps with no local preview image but a PreviewUrl in their JSON,
-	// download the preview in the background — same pipeline as the browse tab.
-	// Cache goes to data/WorkshopMapLoader/LocalPreviews/<folder_name>.jfif
+	// For maps with no local preview, attempt to fetch one from the workshop.
+	// Priority: local cache -> primary URL from JSON -> API search by name.
+	// On success: save image INTO the map's own folder (so local scanner finds it
+	// next refresh without re-downloading) and into LocalPreviews cache.
 	std::string localPreviewCacheDir = BakkesmodPath + "data/WorkshopMapLoader/LocalPreviews/";
 	try { fs::create_directories(fs::path(localPreviewCacheDir)); } catch (...) {}
 
 	for (int mi = 0; mi < (int)MapList.size(); ++mi)
 	{
 		Map& m = MapList[mi];
-		if (!m.PreviewImageBytes.empty()) continue;        // already have bytes
-		if (m.mapPreviewUrl.empty()) continue;             // no URL to fetch from
+		if (!m.PreviewImageBytes.empty()) continue;  // already have bytes from local file
 
-		// Check if we have a cached download from a previous session
-		std::string folderName = m.Folder.filename().string();
-		std::string cachePath  = localPreviewCacheDir + folderName + ".jfif";
+		std::string folderName  = m.Folder.filename().string();
+		std::string mapFolder   = m.Folder.string();
+		std::replace(mapFolder.begin(), mapFolder.end(), '\\', '/');
+
+		// The canonical save location is inside the map's own folder —
+		// the local scanner will find it automatically on the next refresh.
+		std::string mapFolderSavePath = mapFolder + "/" + folderName + ".jfif";
+		std::string cachePath         = localPreviewCacheDir + folderName + ".jfif";
+		std::replace(mapFolderSavePath.begin(), mapFolderSavePath.end(), '\\', '/');
 		std::replace(cachePath.begin(), cachePath.end(), '\\', '/');
 
-		if (Directory_Or_File_Exists(fs::path(cachePath)))
+		// Check map folder first (might have been saved by a previous session)
+		if (Directory_Or_File_Exists(fs::path(mapFolderSavePath)))
 		{
-			// Cache hit — read bytes directly
-			std::ifstream cf(cachePath, std::ios::binary);
+			std::ifstream cf(mapFolderSavePath, std::ios::binary);
 			if (cf)
 			{
-				m.PreviewImageBytes.assign(
-					std::istreambuf_iterator<char>(cf),
-					std::istreambuf_iterator<char>());
-				cvarManager->log("Local preview cache hit: " + cachePath
-					+ " (" + std::to_string(m.PreviewImageBytes.size()) + " bytes)");
-				continue;
+				m.PreviewImageBytes.assign(std::istreambuf_iterator<char>(cf), {});
+				if (!m.PreviewImageBytes.empty())
+				{
+					cvarManager->log("Preview loaded from map folder: " + mapFolderSavePath);
+					continue;
+				}
 			}
 		}
 
-		// Cache miss — download from workshop URL (background thread, same as browse tab)
-		cvarManager->log("Downloading local preview from URL: " + m.mapPreviewUrl);
-		std::thread([this, mi, cachePath, previewUrl = m.mapPreviewUrl]() mutable
+		// Check LocalPreviews cache
+		if (Directory_Or_File_Exists(fs::path(cachePath)))
 		{
-			CurlRequest req;
-			req.url = previewUrl;
-			HttpWrapper::SendCurlRequest(req, [this, mi, cachePath](int code, char* data, size_t size)
+			std::ifstream cf(cachePath, std::ios::binary);
+			if (cf)
 			{
-				if (code != 200 || size == 0)
+				m.PreviewImageBytes.assign(std::istreambuf_iterator<char>(cf), {});
+				if (!m.PreviewImageBytes.empty())
 				{
-					cvarManager->log("Local preview download failed (code=" + std::to_string(code) + ") for map index " + std::to_string(mi));
-					return;
+					cvarManager->log("Preview loaded from cache: " + cachePath);
+					continue;
 				}
+			}
+		}
 
-				// Save to cache
-				try { fs::create_directories(fs::path(cachePath).parent_path()); } catch (...) {}
-				std::ofstream f(cachePath, std::ios::binary);
-				if (f) { f.write(data, size); f.close(); }
+		// No local image — fetch from workshop in a background thread.
+		// Uses synchronous cpr so we can chain primary URL -> API search fallback cleanly.
+		std::string primaryUrl = m.mapPreviewUrl;
+		std::string searchName = m.mapName;
+		std::string apiBase    = rlmaps_url; // "https://celab.jetfox.ovh/api/v4/projects/?search="
 
-				// Store bytes for render-thread upload
-				if (mi < (int)MapList.size())
+		std::thread([this, mi, primaryUrl, searchName, apiBase, mapFolderSavePath, cachePath]()
+		{
+			// Helper: download bytes from a URL using synchronous cpr
+			auto fetchBytes = [](const std::string& url) -> std::vector<unsigned char>
+			{
+				if (url.empty()) return {};
+				cpr::Response r = cpr::Get(cpr::Url{url});
+				if (r.status_code != 200 || r.text.empty()) return {};
+				return std::vector<unsigned char>(r.text.begin(), r.text.end());
+			};
+
+			// Helper: save bytes to disk
+			auto saveBytes = [](const std::string& path, const std::vector<unsigned char>& bytes)
+			{
+				if (bytes.empty()) return;
+				try { fs::create_directories(fs::path(path).parent_path()); } catch (...) {}
+				std::ofstream f(path, std::ios::binary);
+				if (f) f.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+			};
+
+			std::vector<unsigned char> imgBytes;
+
+			// Step 1: try the primary URL stored in the map's JSON
+			if (!primaryUrl.empty())
+			{
+				imgBytes = fetchBytes(primaryUrl);
+				if (!imgBytes.empty())
+					cvarManager->log("Preview fetched from primary URL for: " + searchName);
+			}
+
+			// Step 2: primary failed — search the API by map name to find the real image URL
+			if (imgBytes.empty() && !searchName.empty())
+			{
+				cvarManager->log("Primary URL failed, searching API for: " + searchName);
+
+				cpr::Response searchResp = cpr::Get(cpr::Url{apiBase + searchName});
+				if (searchResp.status_code == 200 && !searchResp.text.empty())
 				{
-					MapList[mi].PreviewImageBytes.assign(data, data + size);
-					cvarManager->log("Local preview ready: " + MapList[mi].mapName);
+					Json::Value results;
+					Json::Reader reader;
+					reader.parse(searchResp.text, results);
+
+					// Try each search result until we get a working image
+					for (int ri = 0; ri < (int)results.size() && imgBytes.empty(); ++ri)
+					{
+						std::string projectPath = results[ri]["path_with_namespace"].asString();
+						std::string projectId   = results[ri]["id"].asString();
+
+						// Try the standard RLMPreview.jpg path first
+						std::string tryUrl = "https://celab.jetfox.ovh/" + projectPath + "/-/raw/master/RLMPreview.jpg";
+						imgBytes = fetchBytes(tryUrl);
+
+						// If that failed, check release asset links for image type
+						if (imgBytes.empty() && !projectId.empty())
+						{
+							cpr::Response relResp = cpr::Get(cpr::Url{
+								"https://celab.jetfox.ovh/api/v4/projects/" + projectId + "/releases"});
+							if (relResp.status_code == 200)
+							{
+								Json::Value releases;
+								Json::Reader rr;
+								rr.parse(relResp.text, releases);
+								for (int rli = 0; rli < (int)releases.size() && imgBytes.empty(); ++rli)
+								{
+									const Json::Value& links = releases[rli]["assets"]["links"];
+									for (int li = 0; li < (int)links.size(); ++li)
+									{
+										if (links[li]["link_type"].asString() == "image")
+										{
+											imgBytes = fetchBytes(links[li]["url"].asString());
+											if (!imgBytes.empty()) break;
+										}
+									}
+								}
+							}
+						}
+
+						if (!imgBytes.empty())
+							cvarManager->log("Preview found via API search for: " + searchName);
+					}
 				}
-			});
+			}
+
+			if (imgBytes.empty())
+			{
+				cvarManager->log("No preview found for: " + searchName);
+				return;
+			}
+
+			// Save into the map's own folder so local scanner finds it next refresh
+			saveBytes(mapFolderSavePath, imgBytes);
+			// Also save to LocalPreviews cache as backup
+			saveBytes(cachePath, imgBytes);
+
+			// Hand bytes to the render thread, but only if MapList hasn't been rebuilt
+			// (i.e. the slot still holds the same map we downloaded for)
+			if (mi < (int)MapList.size() && MapList[mi].mapName == searchName)
+			{
+				MapList[mi].PreviewImageBytes = imgBytes;
+				cvarManager->log("Preview ready for: " + searchName
+					+ " (" + std::to_string(imgBytes.size()) + " bytes)");
+			}
 		}).detach();
 	}
 
