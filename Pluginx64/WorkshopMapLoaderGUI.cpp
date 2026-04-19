@@ -145,11 +145,8 @@ void Pluginx64::Render()
 
 		if (!controller1.LStick_InDeadzone())
 		{
-			int pixelsX = 0;
-			int pixelsY = 0;
-
-			pixelsX = stickX * ControllerSensitivity;
-			pixelsY = stickY * ControllerSensitivity;
+			int pixelsX = (int)(stickX * (float)ControllerSensitivity);
+			int pixelsY = (int)(stickY * (float)ControllerSensitivity);
 
 			SetCursorPos(point.x + pixelsX, point.y - pixelsY);
 		}
