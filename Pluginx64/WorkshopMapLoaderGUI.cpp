@@ -21,6 +21,20 @@ float heightHostGamePopup = 194.f;
 
 void Pluginx64::Render()
 {
+	// FIX: Lazy-init logo ImageWrappers here, NOT in onLoad().
+	// Render() is only called after BakkesMod has set up a fresh valid D3D11/ImGui
+	// context for this session. onLoad() runs too early — the D3D device is stale
+	// under Wine/Proton after a game restart, causing all textures to be invisible.
+	if (!RLMAPSLogoImage)
+	{
+		std::string p = BakkesmodPath + "data/WorkshopMapLoader/";
+		RLMAPSLogoImage                     = std::make_shared<ImageWrapper>(p + "logos/rlmapslogo.png",    false, true);
+		MapsDisplayMode_Logo1_Image         = std::make_shared<ImageWrapper>(p + "logos/logo1.png",         false, true);
+		MapsDisplayMode_Logo2_Image         = std::make_shared<ImageWrapper>(p + "logos/logo2.png",         false, true);
+		MapsDisplayMode_Logo1_SelectedImage = std::make_shared<ImageWrapper>(p + "logos/logo1_selected.png",false, true);
+		MapsDisplayMode_Logo2_SelectedImage = std::make_shared<ImageWrapper>(p + "logos/logo2_selected.png",false, true);
+	}
+
 	// PERF: Guard controller check so XInputGetState (expensive under Wine) is
 	// only called when the feature is actually enabled.
 	if (UseController)
