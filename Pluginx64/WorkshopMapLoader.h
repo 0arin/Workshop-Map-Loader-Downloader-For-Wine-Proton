@@ -211,7 +211,7 @@ public:
 	std::string UdkInDirectory(std::string dirPath);
 	void SaveInCFG();
 	std::vector<std::string> GetMapsFolderPathInCfg(std::string cfgFilePath);
-	void DownloadPreviewImage(std::string downloadUrl, std::string filePath, int mapResultIndex);
+	void DownloadPreviewImage(std::string downloadUrl, std::string filePath, int mapResultIndex, std::string fallbackUrl = "");
 	bool FileIsInDirectoryRecursive(std::string dirPath, std::string filename);
 	float DoRatio(float x, float y);
 	void CleanHTML(std::string& S);
