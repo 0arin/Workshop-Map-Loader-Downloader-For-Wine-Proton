@@ -177,19 +177,9 @@ void Pluginx64::onLoad()
 	std::string RLWin64_Path = std::filesystem::current_path().string();
 	RLCookedPCConsole_Path = RLWin64_Path.substr(0, RLWin64_Path.length() - 14) + "TAGame\\CookedPCConsole";
 
-	// FIX: Do NOT create ImageWrapper objects here.
-	// onLoad() is called before BakkesMod sets up a valid ImGui/D3D11 context for this
-	// session. Under Wine/Proton the DLL stays resident between game restarts, so the
-	// D3D device from the previous session is already destroyed when onLoad() runs again.
-	// ImageWrapper uploads textures to D3D11 on construction — doing that here produces
-	// stale/invalid texture handles that silently render as nothing.
-	// All logo ImageWrappers are created lazily at the top of Render() instead,
-	// where a fresh valid D3D11 context is guaranteed.
-	RLMAPSLogoImage = nullptr;
-	MapsDisplayMode_Logo1_Image = nullptr;
-	MapsDisplayMode_Logo2_Image = nullptr;
-	MapsDisplayMode_Logo1_SelectedImage = nullptr;
-	MapsDisplayMode_Logo2_SelectedImage = nullptr;
+	// Logo textures loaded lazily in Render() where D3D11 device is valid.
+	logosLoaded = false;
+	logoRLMAPS = logoMode1 = logoMode1Selected = logoMode2 = logoMode2Selected = nullptr;
 
 	if (Directory_Or_File_Exists(BakkesmodPath + "data\\WorkshopMapLoader\\workshopmaploader.cfg"))
 	{
@@ -390,17 +380,17 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 
 				if ((!hasFoundPreview && fileExtension == ".png") || (!hasFoundPreview && fileExtension == ".jpg") || (!hasFoundPreview && fileExtension == ".jfif"))
 				{
-					map.PreviewImage = std::make_shared<ImageWrapper>(file.path(), false, true);
-					map.isPreviewImageLoaded = true;
-					cvarManager->log("Preview Loaded : " + file.path().string());
+					std::ifstream imgf(file.path(), std::ios::binary);
+					if (imgf) map.PreviewImageBytes.assign(std::istreambuf_iterator<char>(imgf), std::istreambuf_iterator<char>());
+					cvarManager->log("Preview bytes read : " + file.path().string());
 					hasFoundPreview = true;
 				}
 				else
 				{
 					if (nbFiles == nbFilesInDirectory && hasFoundPreview == false)
 					{
-						map.PreviewImage = std::make_shared<ImageWrapper>(IfNoPreviewImagePath, false, true);
-						map.isPreviewImageLoaded = true;
+						std::ifstream imgf(IfNoPreviewImagePath, std::ios::binary);
+						if (imgf) map.PreviewImageBytes.assign(std::istreambuf_iterator<char>(imgf), std::istreambuf_iterator<char>());
 						cvarManager->log("No preview found in this folder");
 					}
 				}
@@ -440,8 +430,10 @@ void Pluginx64::RefreshMapsFunct(std::string mapsfolders)
 			map.UpkFile = "EmptyFolder";
 			map.ZipFile = "EmptyFolder";
 			map.JsonFile = "EmptyFolder";
-			map.PreviewImage = std::make_shared<ImageWrapper>(IfNoPreviewImagePath, false, true);
-			map.isPreviewImageLoaded = true;
+			{
+			std::ifstream imgf(IfNoPreviewImagePath, std::ios::binary);
+			if (imgf) map.PreviewImageBytes.assign(std::istreambuf_iterator<char>(imgf), std::istreambuf_iterator<char>());
+		}
 		}
 
 		MapList.push_back(map);
@@ -674,13 +666,13 @@ void Pluginx64::GetMapResult(Json::Value maps, int index)
 			listIndex = (int)RLMAPS_MapResultList.size() - 1;
 		}
 
-		// ImageWrapper creates a D3D11 texture — must be on the render thread under Wine/Proton.
-		gameWrapper->Execute([this, resultImagePath, listIndex](GameWrapper* gw)
+		// Read bytes on bg thread — render thread uploads via LoadTextureFromMemory
 		{
 			std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-			RLMAPS_MapResultList[listIndex].Image = std::make_shared<ImageWrapper>(resultImagePath, false, true);
-			RLMAPS_MapResultList[listIndex].isImageLoaded = true;
-		});
+			std::ifstream f(resultImagePath, std::ios::binary);
+			if (f) RLMAPS_MapResultList[listIndex].RawImageBytes.assign(
+				std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+		}
 	}
 }
 
@@ -1086,15 +1078,14 @@ void Pluginx64::DownloadPreviewImage(std::string downloadUrl, std::string filePa
 			imgFile.close();
 			cvarManager->log("PREVIEW SAVED: " + File_Path);
 
-			gameWrapper->Execute([this, File_Path, mapResultIndex](GameWrapper* gw)
+			// Store bytes — render thread uploads via LoadTextureFromMemory
 			{
 				std::lock_guard<std::mutex> lock(RLMAPS_ListMutex);
-				RLMAPS_MapResultList[mapResultIndex].Image = std::make_shared<ImageWrapper>(File_Path, false, true);
+				RLMAPS_MapResultList[mapResultIndex].RawImageBytes.assign(data, data + size);
 				RLMAPS_MapResultList[mapResultIndex].ImagePath = File_Path;
-				RLMAPS_MapResultList[mapResultIndex].isImageLoaded = true;
 				RLMAPS_MapResultList[mapResultIndex].IsDownloadingPreview = false;
-				cvarManager->log("Preview loaded via ImageWrapper: " + File_Path);
-			});
+				cvarManager->log("Preview bytes ready: " + File_Path);
+			}
 		});
 }
 
@@ -1326,16 +1317,20 @@ void Pluginx64::ApplyLanguage()
 
 void Pluginx64::onUnload()
 {
-	// Release all ImageWrapper shared_ptrs explicitly so their D3D11 textures are
-	// freed before the device is torn down. On next onLoad()+Render() cycle they
-	// will be re-created with a fresh valid device.
+	// Release raw D3D11 SRV textures before device teardown
+	for (auto& map : MapList)
+		if (map.PreviewImage) { map.PreviewImage->Release(); map.PreviewImage = nullptr; }
+	for (auto& r : RLMAPS_MapResultList)
+		if (r.Image) { r.Image->Release(); r.Image = nullptr; }
+	if (logoRLMAPS)        { logoRLMAPS->Release();        logoRLMAPS = nullptr; }
+	if (logoMode1)         { logoMode1->Release();         logoMode1 = nullptr; }
+	if (logoMode2)         { logoMode2->Release();         logoMode2 = nullptr; }
+	if (logoMode1Selected) { logoMode1Selected->Release(); logoMode1Selected = nullptr; }
+	if (logoMode2Selected) { logoMode2Selected->Release(); logoMode2Selected = nullptr; }
+	logosLoaded = false;
+
 	RLMAPS_MapResultList.clear();
 	MapList.clear();
 	cachedNoUpkMapList.clear();
 	cachedGoodMapList.clear();
-	RLMAPSLogoImage = nullptr;
-	MapsDisplayMode_Logo1_Image = nullptr;
-	MapsDisplayMode_Logo2_Image = nullptr;
-	MapsDisplayMode_Logo1_SelectedImage = nullptr;
-	MapsDisplayMode_Logo2_SelectedImage = nullptr;
 }
