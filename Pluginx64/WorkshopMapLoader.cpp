@@ -167,12 +167,34 @@ bool ExtractZipCpp(const std::string& zipFilePath, const std::string& destDir)
 // LoadTextureFromMemory — decode JPEG/PNG bytes via GDI+ and upload to D3D11.
 // Must be called from the render thread. Returns nullptr on failure.
 // ---------------------------------------------------------------------------
+// Get the game's D3D11 device via ImGui's font texture SRV.
+// ImGui's font texture was created with the game's real device — GetDevice() on
+// that resource gives us the exact same device without any guesswork.
+static ID3D11Device* s_cachedDevice = nullptr;
+static ID3D11Device* GetGameD3DDevice()
+{
+	if (s_cachedDevice) return s_cachedDevice;
+
+	ImGuiIO& io = ImGui::GetIO();
+	if (!io.Fonts || !io.Fonts->TexID) return nullptr;
+
+	auto* fontSRV = reinterpret_cast<ID3D11ShaderResourceView*>(io.Fonts->TexID);
+	ID3D11Resource* res = nullptr;
+	fontSRV->GetResource(&res);
+	if (!res) return nullptr;
+
+	res->GetDevice(&s_cachedDevice); // GetDevice AddRefs the device
+	res->Release();
+	return s_cachedDevice;
+}
+
+
 ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>& data)
 {
 	if (data.empty()) return nullptr;
 
-	// Return nullptr (without consuming bytes) if D3D11 isn't ready yet
-	if (!ImGui_ImplDX11_GetDevice()) return nullptr;
+	ID3D11Device* device = GetGameD3DDevice();
+	if (!device) return nullptr;
 
 	static ULONG_PTR gdiplusToken = 0;
 	static bool gdiplusInitialised = false;
@@ -221,8 +243,6 @@ ID3D11ShaderResourceView* LoadTextureFromMemory(const std::vector<unsigned char>
 	bitmap->UnlockBits(&bitmapData);
 	delete bitmap;
 
-	ID3D11Device* device = ImGui_ImplDX11_GetDevice();
-	if (!device) return nullptr;
 
 	D3D11_TEXTURE2D_DESC desc = {};
 	desc.Width = width; desc.Height = height;
@@ -1423,6 +1443,7 @@ void Pluginx64::onUnload()
 	if (logoMode1Selected) { logoMode1Selected->Release(); logoMode1Selected = nullptr; }
 	if (logoMode2Selected) { logoMode2Selected->Release(); logoMode2Selected = nullptr; }
 	logosLoaded = false;
+	if (s_cachedDevice) { s_cachedDevice->Release(); s_cachedDevice = nullptr; }
 
 	RLMAPS_MapResultList.clear();
 	MapList.clear();
